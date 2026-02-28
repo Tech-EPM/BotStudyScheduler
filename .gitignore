@@ -1,0 +1,42 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# === Виртуальное окружение ===
+venv/
+env/
+ENV/
+.venv/
+
+# === База данных (чтобы не светить данные) ===
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+
+# === Секреты и конфиги (ТОЧНО СКРЫТЬ!) ===
+.env
+.env.local
+config.py
+secrets.json
+storage/
+
+# === IDE и редакторы ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === Логи и временные файлы ===
+*.log
+logs/
+temp/
+.tmp/
+
+# === ОС ===
+.DS_Store           # macOS
+Thumbs.db           # Windows
