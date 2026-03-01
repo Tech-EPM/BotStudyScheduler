@@ -101,6 +101,7 @@ class FileDocument(Base):
 class Schedule(Base):
     __tablename__ = 'schedule'
     id = Column(Integer, primary_key=True, autoincrement=True)
+    week_type = Column(String, nullable=False, default="1")
     day_of_week = Column(String, nullable=False)
     lesson_number = Column(Integer, nullable=False)
     subject = Column(String, nullable=False)

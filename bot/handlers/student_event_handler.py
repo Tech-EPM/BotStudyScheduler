@@ -7,9 +7,13 @@ from sqlalchemy import select
 
 from bot.db.models import Event
 from bot.utils.keyboards import Keyboards
+from bot.config import Config
 
 logger = logging.getLogger(__name__)
 router_student_events = Router()
+
+def get_menu_for_user(user_id: int):
+    return Keyboards.get_admin_menu() if user_id in Config.ADMIN_IDS else Keyboards.get_student_menu()
 
 
 # ==========================================
@@ -30,7 +34,7 @@ async def show_events_from_menu(message: types.Message, session: AsyncSession):
         await message.answer(
             "📭 <b>Пока нет запланированных событий</b>\n\n"
             "Заходите позже — мы обязательно что-нибудь придумаем! 😊",
-            reply_markup=Keyboards.get_student_menu(),
+            reply_markup=get_menu_for_user(message.from_user.id),
             parse_mode="HTML"
         )
         return
@@ -66,7 +70,7 @@ async def show_events_from_menu(message: types.Message, session: AsyncSession):
         "📅 <b>Афиша ближайших событий</b>\n\n" +
         "\n".join(event_list) +
         f"\n<i>Всего событий: {len(events)}</i>",
-        reply_markup=Keyboards.get_student_menu(),
+        reply_markup=get_menu_for_user(message.from_user.id),
         parse_mode="HTML"
     )
 

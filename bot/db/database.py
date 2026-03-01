@@ -1,4 +1,4 @@
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 from bot.config import Config
@@ -48,6 +48,22 @@ async def init_db():
     """Создает таблицы в БД"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_schedule_week_type_column)
+
+
+def _ensure_schedule_week_type_column(sync_conn):
+    """Добавляет week_type в таблицу schedule для старых БД без миграций."""
+    inspector = inspect(sync_conn)
+    if "schedule" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("schedule")}
+    if "week_type" in columns:
+        return
+
+    sync_conn.execute(
+        text("ALTER TABLE schedule ADD COLUMN week_type VARCHAR NOT NULL DEFAULT '1'")
+    )
 
 def get_session():
     """Генератор сессий (если понадобится для зависимостей)"""

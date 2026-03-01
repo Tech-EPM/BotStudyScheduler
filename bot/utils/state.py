@@ -17,6 +17,7 @@ class AdminState(StatesGroup):
 
 
 class ScheduleAdd(StatesGroup):
+    week_number = State()
     lesson_number = State()
     subject = State()
     time_start = State()

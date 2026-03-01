@@ -18,10 +18,10 @@ router_files_student = Router()
 # 1. ОТКРЫТИЕ ИЗ ГЛАВНОГО МЕНЮ (Reply Keyboard)
 # ==========================================
 
-@router_files_student.message(F.text == "📚 Обычные файлы")
+@router_files_student.message(F.text == "📚 Учебные материалы")
 @router_files_student.message(Command('view_file'))
 async def open_files_from_menu(message: types.Message, session: AsyncSession):
-    """Студент нажал кнопку '📚 Обычные файлы' в главном меню"""
+    """Студент нажал кнопку '📚 Учебные материалы' в главном меню"""
     
     stmt = select(FileDocument.category).distinct()
     result = await session.execute(stmt)
@@ -38,7 +38,7 @@ async def open_files_from_menu(message: types.Message, session: AsyncSession):
     
    
     await message.answer(
-        "📚 <b>Обычные файлы</b> (База знаний)\n\n"
+        "📚 <b>Учебные материалы</b> (База знаний)\n\n"
         "📂 <b>Доступные категории:</b>\n\n" +
         "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories))),
         reply_markup=Keyboards.get_categories_keyboard(sorted(set(categories)), prefix="files_in_"),
@@ -63,7 +63,7 @@ async def show_common_categories(callback: types.CallbackQuery, session: AsyncSe
         return
     
     await callback.message.edit_text(
-        "📚 <b>Обычные файлы</b> (База знаний)\n\n"
+        "📚 <b>Учебные материалы</b> (База знаний)\n\n"
         "📂 <b>Доступные категории:</b>\n\n" +
         "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories))),
         reply_markup=Keyboards.get_categories_keyboard(sorted(set(categories)), prefix="files_in_"),

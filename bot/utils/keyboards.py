@@ -11,6 +11,14 @@ DAYS = {
     "sunday": "Воскресенье",
 }
 
+SCHEDULE_DAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+)
 
 class Keyboards:
 
@@ -23,8 +31,9 @@ class Keyboards:
         keyboard = [
             [KeyboardButton(text="👨‍🏫 Админ-панель"), KeyboardButton(text="📅 Расписание")],
             [
-                KeyboardButton(text="📚 Обычные файлы"),
+                KeyboardButton(text="📚 Учебные материалы"),
                 KeyboardButton(text="🎓 Файлы сессий"),
+                KeyboardButton(text="✨ События"),
             ],
             [KeyboardButton(text="🆘 Помощь")],
         ]
@@ -35,7 +44,7 @@ class Keyboards:
         keyboard = [
             [KeyboardButton(text="📅 Расписание")],
             [
-                KeyboardButton(text="📚 Обычные файлы"),
+                KeyboardButton(text="📚 Учебные материалы"),
                 KeyboardButton(text="🎓 Файлы сессий"),
                 KeyboardButton(text="✨ События"),  # ✅ NEW
             ],
@@ -51,7 +60,7 @@ class Keyboards:
     def get_admin_main_keyboard() -> InlineKeyboardMarkup:
         keyboard = [
             [InlineKeyboardButton(text="⏰ Редактировать расписание", callback_data="admin_edit_schedule")],
-            [InlineKeyboardButton(text="📚 Редактировать общие материалы", callback_data="admin_edit_common_files")],
+            [InlineKeyboardButton(text="📚 Редактировать учебные материалы", callback_data="admin_edit_common_files")],
             [InlineKeyboardButton(text="📝 Редактировать материалы для сессии", callback_data="admin_edit_session_files")],
             [InlineKeyboardButton(text="⏳ Редактировать напоминания", callback_data="admin_edit_reminders")],
             [InlineKeyboardButton(text="✨ Редактировать события", callback_data="admin_edit_events")],
@@ -61,8 +70,8 @@ class Keyboards:
     @staticmethod
     def get_admin_schedule_keyboard() -> InlineKeyboardMarkup:
         keyboard = [
-            [InlineKeyboardButton(text="➕ Добавить пару", callback_data="admin_add_select_day")],
-            [InlineKeyboardButton(text="➖ Удалить пару", callback_data="admin_del_select_day")],
+            [InlineKeyboardButton(text="➕ Добавить пару", callback_data="admin_add_select_week")],
+            [InlineKeyboardButton(text="➖ Удалить пару", callback_data="admin_del_select_week")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")],
         ]
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -112,20 +121,51 @@ class Keyboards:
     # ==========================================
 
     @staticmethod
-    def get_admin_days_keyboard(action: str = "view", from_menu: str = "main") -> InlineKeyboardMarkup:
+    def get_admin_weeks_keyboard(
+        weeks: list[str],
+        action: str = "view",
+        from_menu: str = "main",
+        include_add_button: bool = False
+    ) -> InlineKeyboardMarkup:
         keyboard = []
-        for day_id, day_name in DAYS.items():
-            if action == "view":
-                cb_data = f"day_{day_id}|{from_menu}"
-            elif action == "add":
-                cb_data = f"add_{day_id}|{from_menu}"
+        for week_id in weeks:
+            week_name = f"{week_id} неделя"
+            if action == "add":
+                cb_data = f"admin_add_week_{week_id}|{from_menu}"
             elif action == "del":
-                cb_data = f"del_{day_id}|{from_menu}"
+                cb_data = f"admin_del_week_{week_id}|{from_menu}"
             else:
-                cb_data = f"day_{day_id}|{from_menu}"
+                cb_data = f"week_{week_id}|{from_menu}"
+
+            keyboard.append([InlineKeyboardButton(text=week_name, callback_data=cb_data)])
+
+        if include_add_button and action == "add":
+            keyboard.append([InlineKeyboardButton(text="➕ Другая неделя", callback_data="admin_add_custom_week")])
+
+        keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")])
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    @staticmethod
+    def get_admin_days_keyboard(
+        action: str = "view",
+        from_menu: str = "main",
+        week_type: str = "1"
+    ) -> InlineKeyboardMarkup:
+        keyboard = []
+        for day_id in SCHEDULE_DAYS:
+            day_name = DAYS[day_id]
+            if action == "view":
+                cb_data = f"day_{day_id}|{from_menu}|{week_type}"
+            elif action == "add":
+                cb_data = f"add_{day_id}|{from_menu}|{week_type}"
+            elif action == "del":
+                cb_data = f"del_{day_id}|{from_menu}|{week_type}"
+            else:
+                cb_data = f"day_{day_id}|{from_menu}|{week_type}"
             
             keyboard.append([InlineKeyboardButton(text=day_name, callback_data=cb_data)])
         
+        keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"admin_back_to_weeks_{from_menu}")])
         keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="goto_back")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -143,19 +183,33 @@ class Keyboards:
 
 
     @staticmethod
-    def get_student_days_keyboard(action: str = "view", from_menu: str = "main") -> InlineKeyboardMarkup:
+    def get_student_weeks_keyboard(weeks: list[str], from_menu: str = "main") -> InlineKeyboardMarkup:
+        keyboard = [
+            [InlineKeyboardButton(text=f"{week_id} неделя", callback_data=f"week_{week_id}|{from_menu}")]
+            for week_id in weeks
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    @staticmethod
+    def get_student_days_keyboard(
+        action: str = "view",
+        from_menu: str = "main",
+        week_type: str = "1"
+    ) -> InlineKeyboardMarkup:
         keyboard = []
-        for day_id, day_name in DAYS.items():
+        for day_id in SCHEDULE_DAYS:
+            day_name = DAYS[day_id]
             if action == "view":
-                cb_data = f"day_{day_id}|{from_menu}"
+                cb_data = f"day_{day_id}|{from_menu}|{week_type}"
             elif action == "add":
-                cb_data = f"add_{day_id}|{from_menu}"
+                cb_data = f"add_{day_id}|{from_menu}|{week_type}"
             elif action == "del":
-                cb_data = f"del_{day_id}|{from_menu}"
+                cb_data = f"del_{day_id}|{from_menu}|{week_type}"
             else:
-                cb_data = f"day_{day_id}|{from_menu}"
+                cb_data = f"day_{day_id}|{from_menu}|{week_type}"
             
             keyboard.append([InlineKeyboardButton(text=day_name, callback_data=cb_data)])
+        keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"back_to_weeks_{from_menu}")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     # ==========================================
@@ -247,7 +301,7 @@ class Keyboards:
         """Навигация в главном меню студента (для inline-режима)"""
         keyboard = [
             [
-                InlineKeyboardButton(text="📚 Обычные файлы", callback_data="view_common_files"),
+                InlineKeyboardButton(text="📚 Учебные материалы", callback_data="view_common_files"),
                 InlineKeyboardButton(text="🎓 Файлы сессий", callback_data="view_session_files"),
             ],
             [InlineKeyboardButton(text="📅 Расписание", callback_data="view_schedule")],
