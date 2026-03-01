@@ -1,241 +1,412 @@
-import asyncio
+import datetime as dt
 
 from aiogram import Router, F
 from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from bot.utils.filters import IsAdmin  
 from aiogram.fsm.context import FSMContext
-
-from bot.utils.keyboards import Keyboards, DAYS
-
-from bot.utils.state import ScheduleAdd
-
-from bot.db.database import async_session_maker
-from bot.db.models import Schedule
+from aiogram.exceptions import TelegramBadRequest
 
 from sqlalchemy import select, or_
 
-from aiogram.exceptions import TelegramBadRequest
+from bot.utils.filters import IsAdmin
+from bot.utils.keyboards import Keyboards, DAYS
+from bot.utils.state import ScheduleAdd
+from bot.db.database import async_session_maker
+from bot.db.models import Schedule, ScheduleWeek
 
 
 router_admin = Router()
 
 
-def _normalize_week_value(raw_value: str | None) -> str:
-    if raw_value is None:
-        return "1"
-    value = str(raw_value).strip().lower()
-    if value.startswith("week") and value[4:].isdigit():
-        value = value[4:]
-    if value.isdigit():
-        return str(int(value))
-    return value
+def _format_week_label(week: ScheduleWeek) -> str:
+    return f"{week.title} ({week.start_date.strftime('%d.%m')} - {week.end_date.strftime('%d.%m')})"
 
 
-def _week_title(week_value: str) -> str:
-    return f"{week_value} неделя"
+def _parse_date(value: str) -> dt.date | None:
+    value = value.strip()
+    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return dt.datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
-def _week_sort_key(value: str):
-    return (0, int(value)) if value.isdigit() else (1, value)
-
-
-def _week_filter(week_value: str):
-    conditions = [
-        Schedule.week_type == week_value,
-        Schedule.week_type == f"week{week_value}",
-    ]
-    if week_value == "1":
-        conditions.append(Schedule.week_type.is_(None))
-    return or_(*conditions)
-
-
-async def _get_available_weeks() -> list[str]:
+async def _get_weeks() -> list[ScheduleWeek]:
     async with async_session_maker() as session:
-        result = await session.execute(select(Schedule.week_type).distinct())
-        raw_weeks = result.scalars().all()
-
-    weeks = {_normalize_week_value(value) for value in raw_weeks}
-    weeks.discard("")
-    if not weeks:
-        return []
-    return sorted(weeks, key=_week_sort_key)
+        result = await session.execute(
+            select(ScheduleWeek)
+            .where(ScheduleWeek.is_active == 1)
+            .order_by(ScheduleWeek.start_date)
+        )
+        return result.scalars().all()
 
 
+async def _get_week_by_id(week_id: int) -> ScheduleWeek | None:
+    async with async_session_maker() as session:
+        return await session.get(ScheduleWeek, week_id)
+
+
+def _week_filter(week_id: int):
+    return or_(
+        Schedule.week_id == week_id,
+        Schedule.week_type == str(week_id),
+        Schedule.week_type == f"week{week_id}",
+    )
+
+
+async def _build_week_schedule_text(week: ScheduleWeek) -> str:
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Schedule)
+            .where(_week_filter(week.id))
+            .order_by(Schedule.day_of_week, Schedule.lesson_number)
+        )
+        lessons = result.scalars().all()
+
+    by_day: dict[str, list[Schedule]] = {day: [] for day in DAYS.keys()}
+    for lesson in lessons:
+        by_day.setdefault(lesson.day_of_week, []).append(lesson)
+
+    lines = [f"📆 <b>{_format_week_label(week)}</b>"]
+    for day_id in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday"):
+        lines.append(f"\n<b>{DAYS[day_id]}</b>")
+        day_lessons = sorted(by_day.get(day_id, []), key=lambda l: l.lesson_number)
+        if not day_lessons:
+            lines.append("• Пар нет")
+            continue
+
+        for lesson in day_lessons:
+            row = f"• {lesson.lesson_number}. {lesson.time_start}-{lesson.time_end} {lesson.subject}"
+            extra = []
+            if lesson.classroom:
+                extra.append(f"ауд. {lesson.classroom}")
+            if lesson.teacher:
+                extra.append(lesson.teacher)
+            if extra:
+                row += f" ({', '.join(extra)})"
+            lines.append(row)
+
+    return "\n".join(lines)
+
+
+@router_admin.message(F.text == "👩‍🏫 Админ-панель")
 @router_admin.message(F.text == "👨‍🏫 Админ-панель")
-@router_admin.message(Command('admin'))
+@router_admin.message(Command("admin"))
 async def cmd_admin_panel(message: Message):
     if not await IsAdmin()(message):
         await message.answer("❌ У вас нет доступа к админ-панели.")
         return
     await message.answer(
-        "👨‍🏫 <b>Панель старосты:</b>",
+        "👩‍🏫 <b>Панель старосты:</b>",
         reply_markup=Keyboards.get_admin_main_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
 
-#Редкактирование расписания
 @router_admin.callback_query(F.data == "admin_edit_schedule")
 async def goto_edit_schedule(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "⏰ <b>Редактирование расписания</b>\n",
+        "⏰ <b>Редактирование расписания</b>",
         reply_markup=Keyboards.get_admin_schedule_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Редактирование учебных материалов
 @router_admin.callback_query(F.data == "admin_edit_common_files")
 async def goto_edit_files(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📚<b>Редактирование учебных материалов</b>\n",
+        "📚<b>Редактирование учебных материалов</b>",
         reply_markup=Keyboards.get_admin_common_edit_files_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Редактирование материалов для сессии
 @router_admin.callback_query(F.data == "admin_edit_session_files")
 async def goto_edit_session_files(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📝<b>Редактирование материалов для сессий</b>\n",
+        "🎓<b>Редактирование материалов для сессий</b>",
         reply_markup=Keyboards.get_admin_session_edit_files_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Редактирование напоминаний
 @router_admin.callback_query(F.data == "admin_edit_reminders")
 async def goto_edit_reminders(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "⏳<b>Редактирование напоминаний для преподавателей</b>\n",
+        "⏳<b>Редактирование напоминаний для преподавателей</b>",
         reply_markup=Keyboards.get_admin_reminders_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Редактирование событий
 @router_admin.callback_query(F.data == "admin_edit_events")
 async def goto_edit_events(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "✨<b>Редакирование событий</b>\n",
-        reply_markup=Keyboards.get_admin_events_keyboard(), 
-        parse_mode="HTML"
+        "✨<b>Редактирование событий</b>",
+        reply_markup=Keyboards.get_admin_events_keyboard(),
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Редактирование событий
-@router_admin.callback_query(F.data == "admin_edit_reminders")
-async def goto_edit_events(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "✨<b>Редакирование событий</b>\n",
-        reply_markup=Keyboards.get_admin_reminders_keyboard(), 
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-
-#Back to main menu
 @router_admin.callback_query(F.data == "goto_back")
 async def goto_admin_panel(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "👨‍🏫 <b>Панель старосты:</b>\n",
+        "👩‍🏫 <b>Панель старосты:</b>",
         reply_markup=Keyboards.get_admin_main_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-#Переход в добавление
-@router_admin.callback_query(F.data == "admin_add_select_week")
-async def goto_add_select_week(callback: CallbackQuery, state: FSMContext):
-    weeks = await _get_available_weeks()
-    default_weeks = ["1", "2"]
-    for week in default_weeks:
-        if week not in weeks:
-            weeks.append(week)
-    weeks = sorted(weeks, key=_week_sort_key)
+@router_admin.callback_query(F.data == "admin_manage_weeks")
+async def admin_manage_weeks(callback: CallbackQuery):
+    weeks = await _get_weeks()
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Добавить неделю", callback_data="admin_week_create")],
+        [InlineKeyboardButton(text="✏️ Редактировать неделю", callback_data="admin_week_edit_menu")],
+        [InlineKeyboardButton(text="➖ Удалить неделю", callback_data="admin_week_delete_menu")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_edit_schedule")],
+    ]
+    text = "🗓️ <b>Управление неделями</b>\n\n"
+    if weeks:
+        text += "Текущие недели:\n" + "\n".join(f"• {_format_week_label(w)}" for w in weeks)
+    else:
+        text += "Пока нет созданных недель."
 
-    await callback.message.edit_text(
-        "Выберите неделю для добавления пары или добавьте новую:\n",
-        reply_markup=Keyboards.get_admin_weeks_keyboard(
-            weeks=weeks,
-            action="add",
-            include_add_button=True
-        ),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     await callback.answer()
 
 
+@router_admin.callback_query(F.data == "admin_week_create")
 @router_admin.callback_query(F.data == "admin_add_custom_week")
-async def goto_add_custom_week(callback: CallbackQuery, state: FSMContext):
+async def admin_week_create(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.update_data(week_edit_mode="create")
+    await state.set_state(ScheduleAdd.week_title)
     await callback.message.edit_text(
-        "Введите номер недели (например: 3):",
-        parse_mode="HTML"
+        "Введите название недели (пример: <b>Неделя 01.03-07.03</b>):",
+        parse_mode="HTML",
     )
-    await state.set_state(ScheduleAdd.week_number)
     await callback.answer()
 
 
-@router_admin.message(StateFilter(ScheduleAdd.week_number))
-async def add_custom_week_number(message: Message, state: FSMContext):
-    week_value = message.text.strip()
-    if not week_value.isdigit() or int(week_value) <= 0:
-        await message.answer("❌ Введите положительный номер недели (например: 3).")
+@router_admin.callback_query(F.data == "admin_week_edit_menu")
+async def admin_week_edit_menu(callback: CallbackQuery):
+    weeks = await _get_weeks()
+    if not weeks:
+        await callback.answer("Нет недель для редактирования", show_alert=True)
         return
 
-    week_value = str(int(week_value))
-    await message.answer(
-        f"📆 Неделя: <b>{_week_title(week_value)}</b>\n\nВыберите день для добавления пары:",
-        reply_markup=Keyboards.get_admin_days_keyboard(
-            action="add",
-            from_menu="admin_add",
-            week_type=week_value
-        ),
-        parse_mode="HTML"
-    )
-    await state.clear()
+    keyboard = [
+        [InlineKeyboardButton(text=f"✏️ {_format_week_label(w)}", callback_data=f"admin_week_edit_{w.id}")]
+        for w in weeks
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_manage_weeks")])
 
-
-@router_admin.callback_query(F.data.startswith("admin_add_week_"))
-async def goto_add_select_day(callback: CallbackQuery, state: FSMContext):
-    payload = callback.data.replace("admin_add_week_", "", 1)
-    week_type = _normalize_week_value(payload.split("|")[0])
     await callback.message.edit_text(
-        f"📆 Неделя: <b>{_week_title(week_type)}</b>\n\nВыберите день для добавления пары:\n",
-        reply_markup=Keyboards.get_admin_days_keyboard(
-            action="add",
-            from_menu="admin_add",
-            week_type=week_type
-        ),
-        parse_mode="HTML"
+        "Выберите неделю для редактирования:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
     )
     await callback.answer()
 
 
-#Переход в удаление
-@router_admin.callback_query(F.data == "admin_del_select_week")
-async def goto_del_select_week(callback: CallbackQuery, state: FSMContext):
-    weeks = await _get_available_weeks()
+@router_admin.callback_query(F.data.startswith("admin_week_edit_"))
+async def admin_week_edit_pick(callback: CallbackQuery, state: FSMContext):
+    week_id = int(callback.data.replace("admin_week_edit_", ""))
+    week = await _get_week_by_id(week_id)
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(week_edit_mode="edit", edit_week_id=week.id)
+    await state.set_state(ScheduleAdd.week_title)
+    await callback.message.edit_text(
+        f"Текущая неделя: <b>{_format_week_label(week)}</b>\n\n"
+        "Введите новое название:",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data == "admin_week_delete_menu")
+async def admin_week_delete_menu(callback: CallbackQuery):
+    weeks = await _get_weeks()
+    if not weeks:
+        await callback.answer("Нет недель для удаления", show_alert=True)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"🗑 {_format_week_label(w)}", callback_data=f"admin_week_delete_{w.id}")]
+        for w in weeks
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_manage_weeks")])
+
+    await callback.message.edit_text(
+        "Выберите неделю для удаления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data.startswith("admin_week_delete_"))
+async def admin_week_delete(callback: CallbackQuery):
+    week_id = int(callback.data.replace("admin_week_delete_", ""))
+    async with async_session_maker() as session:
+        week = await session.get(ScheduleWeek, week_id)
+        if not week:
+            await callback.answer("Неделя не найдена", show_alert=True)
+            return
+
+        lessons_res = await session.execute(select(Schedule).where(Schedule.week_id == week_id))
+        for lesson in lessons_res.scalars().all():
+            await session.delete(lesson)
+        await session.delete(week)
+        await session.commit()
+
+    await callback.answer("Неделя удалена", show_alert=False)
+    await admin_manage_weeks(callback)
+
+
+@router_admin.message(StateFilter(ScheduleAdd.week_title))
+async def week_title_received(message: Message, state: FSMContext):
+    title = message.text.strip()
+    if len(title) < 3:
+        await message.answer("❌ Название слишком короткое.")
+        return
+    await state.update_data(week_title=title)
+    await state.set_state(ScheduleAdd.week_start_date)
+    await message.answer("Введите дату начала недели в формате ДД.ММ.ГГГГ (пример: 01.03.2026):")
+
+
+@router_admin.message(StateFilter(ScheduleAdd.week_start_date))
+async def week_start_date_received(message: Message, state: FSMContext):
+    start_date = _parse_date(message.text)
+    if not start_date:
+        await message.answer("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ.")
+        return
+    await state.update_data(week_start_date=start_date.isoformat())
+    await state.set_state(ScheduleAdd.week_end_date)
+    await message.answer("Введите дату конца недели в формате ДД.ММ.ГГГГ:")
+
+
+@router_admin.message(StateFilter(ScheduleAdd.week_end_date))
+async def week_end_date_received(message: Message, state: FSMContext):
+    end_date = _parse_date(message.text)
+    if not end_date:
+        await message.answer("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ.")
+        return
+
+    data = await state.get_data()
+    start_date = dt.date.fromisoformat(data["week_start_date"])
+    if end_date < start_date:
+        await message.answer("❌ Дата конца не может быть раньше даты начала.")
+        return
+
+    async with async_session_maker() as session:
+        mode = data.get("week_edit_mode", "create")
+        if mode == "edit":
+            week = await session.get(ScheduleWeek, int(data["edit_week_id"]))
+            if not week:
+                await message.answer("❌ Неделя не найдена.")
+                await state.clear()
+                return
+            week.title = data["week_title"]
+            week.start_date = start_date
+            week.end_date = end_date
+            action = "обновлена"
+        else:
+            week = ScheduleWeek(
+                title=data["week_title"],
+                start_date=start_date,
+                end_date=end_date,
+                is_active=1,
+            )
+            session.add(week)
+            action = "создана"
+
+        await session.commit()
+
+    await state.clear()
+    await message.answer(
+        f"✅ Неделя {action}: <b>{data['week_title']}</b>",
+        parse_mode="HTML",
+        reply_markup=Keyboards.get_admin_schedule_keyboard(),
+    )
+
+
+@router_admin.callback_query(F.data == "admin_add_select_week")
+async def goto_add_select_week(callback: CallbackQuery, state: FSMContext):
+    weeks = await _get_weeks()
     if not weeks:
         await callback.message.edit_text(
-            "📭 В расписании пока нет пар для удаления.",
-            reply_markup=Keyboards.get_admin_schedule_keyboard()
+            "Сначала создайте неделю с датами.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Создать неделю", callback_data="admin_week_create")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_edit_schedule")],
+                ]
+            ),
         )
         await callback.answer()
         return
 
     await callback.message.edit_text(
-        "Выберите неделю для удаления пары:\n",
-        reply_markup=Keyboards.get_admin_weeks_keyboard(weeks=weeks, action="del"),
-        parse_mode="HTML"
+        "Выберите неделю для добавления пары:",
+        reply_markup=Keyboards.get_admin_weeks_keyboard(
+            weeks=[(w.id, _format_week_label(w)) for w in weeks],
+            action="add",
+            include_add_button=True,
+        ),
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data.startswith("admin_add_week_"))
+async def goto_add_select_day(callback: CallbackQuery, state: FSMContext):
+    payload = callback.data.replace("admin_add_week_", "", 1)
+    week_id = int(payload.split("|")[0])
+    week = await _get_week_by_id(week_id)
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"📆 Неделя: <b>{_format_week_label(week)}</b>\n\nВыберите день для добавления пары:",
+        reply_markup=Keyboards.get_admin_days_keyboard(
+            action="add",
+            from_menu="admin_add",
+            week_type=str(week.id),
+            full_schedule_callback=f"admin_week_full_{week.id}",
+        ),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data == "admin_del_select_week")
+async def goto_del_select_week(callback: CallbackQuery, state: FSMContext):
+    weeks = await _get_weeks()
+    if not weeks:
+        await callback.message.edit_text(
+            "📭 В расписании пока нет недель.",
+            reply_markup=Keyboards.get_admin_schedule_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "Выберите неделю для удаления пары:",
+        reply_markup=Keyboards.get_admin_weeks_keyboard(
+            weeks=[(w.id, _format_week_label(w)) for w in weeks],
+            action="del",
+        ),
     )
     await callback.answer()
 
@@ -243,15 +414,21 @@ async def goto_del_select_week(callback: CallbackQuery, state: FSMContext):
 @router_admin.callback_query(F.data.startswith("admin_del_week_"))
 async def goto_del_select_day(callback: CallbackQuery, state: FSMContext):
     payload = callback.data.replace("admin_del_week_", "", 1)
-    week_type = _normalize_week_value(payload.split("|")[0])
+    week_id = int(payload.split("|")[0])
+    week = await _get_week_by_id(week_id)
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
+
     await callback.message.edit_text(
-        f"📆 Неделя: <b>{_week_title(week_type)}</b>\n\nВыберите день для удаления пары:\n",
+        f"📆 Неделя: <b>{_format_week_label(week)}</b>\n\nВыберите день для удаления пары:",
         reply_markup=Keyboards.get_admin_days_keyboard(
             action="del",
             from_menu="admin_del",
-            week_type=week_type
+            week_type=str(week.id),
+            full_schedule_callback=f"admin_week_full_{week.id}",
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await callback.answer()
 
@@ -259,62 +436,58 @@ async def goto_del_select_day(callback: CallbackQuery, state: FSMContext):
 @router_admin.callback_query(F.data.startswith("admin_back_to_weeks_"))
 async def back_to_weeks(callback: CallbackQuery):
     from_menu = callback.data.replace("admin_back_to_weeks_", "")
-    weeks = await _get_available_weeks()
+    weeks = await _get_weeks()
+
     if from_menu == "admin_add":
-        default_weeks = ["1", "2"]
-        for week in default_weeks:
-            if week not in weeks:
-                weeks.append(week)
-        weeks = sorted(weeks, key=_week_sort_key)
         await callback.message.edit_text(
-            "Выберите неделю для добавления пары или добавьте новую:\n",
+            "Выберите неделю для добавления пары:",
             reply_markup=Keyboards.get_admin_weeks_keyboard(
-                weeks=weeks,
+                weeks=[(w.id, _format_week_label(w)) for w in weeks],
                 action="add",
-                from_menu=from_menu,
-                include_add_button=True
+                include_add_button=True,
             ),
-            parse_mode="HTML"
         )
     elif from_menu == "admin_del":
-        if not weeks:
-            await callback.message.edit_text(
-                "📭 В расписании пока нет пар для удаления.",
-                reply_markup=Keyboards.get_admin_schedule_keyboard()
-            )
-            await callback.answer()
-            return
         await callback.message.edit_text(
-            "Выберите неделю для удаления пары:\n",
+            "Выберите неделю для удаления пары:",
             reply_markup=Keyboards.get_admin_weeks_keyboard(
-                weeks=weeks,
+                weeks=[(w.id, _format_week_label(w)) for w in weeks],
                 action="del",
-                from_menu=from_menu
             ),
-            parse_mode="HTML"
         )
-    else:
-        await callback.answer()
-        return
     await callback.answer()
 
 
+@router_admin.callback_query(F.data.startswith("admin_week_full_"))
+async def admin_show_full_week(callback: CallbackQuery):
+    week_id = int(callback.data.replace("admin_week_full_", ""))
+    week = await _get_week_by_id(week_id)
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
 
-#Добавление пар
+    text = await _build_week_schedule_text(week)
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer("Полное расписание отправлено")
+
+
 @router_admin.callback_query(F.data.startswith("add_"))
 async def add_lesson_select_day(callback: CallbackQuery, state: FSMContext):
     payload = callback.data.replace("add_", "", 1)
     payload_parts = payload.split("|")
     day_id = payload_parts[0]
-    week_type = _normalize_week_value(payload_parts[2] if len(payload_parts) > 2 else "1")
-    await state.update_data(day=day_id, week_type=week_type, from_menu="admin")
-    
+    week_id = int(payload_parts[2] if len(payload_parts) > 2 else "1")
+    await state.update_data(day=day_id, week_id=week_id)
+
+    week = await _get_week_by_id(week_id)
+    week_name = _format_week_label(week) if week else f"Неделя {week_id}"
+
     try:
         await callback.message.edit_text(
-            f"📆 Неделя: <b>{_week_title(week_type)}</b>\n"
+            f"📆 Неделя: <b>{week_name}</b>\n"
             f"📅 День: <b>{DAYS[day_id]}</b>\n\n"
             "Введите номер пары (1, 2, 3...):",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
     except TelegramBadRequest:
         await callback.answer()
@@ -333,11 +506,13 @@ async def add_lesson_number(message: Message, state: FSMContext):
     await message.answer("📚 Введите название предмета:")
     await state.set_state(ScheduleAdd.subject)
 
+
 @router_admin.message(StateFilter(ScheduleAdd.subject))
 async def add_lesson_subject(message: Message, state: FSMContext):
     await state.update_data(subject=message.text)
     await message.answer("⏰ Введите время начала (09:00):")
     await state.set_state(ScheduleAdd.time_start)
+
 
 @router_admin.message(StateFilter(ScheduleAdd.time_start))
 async def add_lesson_time_start(message: Message, state: FSMContext):
@@ -345,11 +520,13 @@ async def add_lesson_time_start(message: Message, state: FSMContext):
     await message.answer("⏰ Введите время окончания (10:30):")
     await state.set_state(ScheduleAdd.time_end)
 
+
 @router_admin.message(StateFilter(ScheduleAdd.time_end))
 async def add_lesson_time_end(message: Message, state: FSMContext):
     await state.update_data(time_end=message.text)
     await message.answer("🚪 Аудитория (или 'пропустить'):")
     await state.set_state(ScheduleAdd.classroom)
+
 
 @router_admin.message(StateFilter(ScheduleAdd.classroom))
 async def add_lesson_classroom(message: Message, state: FSMContext):
@@ -357,145 +534,126 @@ async def add_lesson_classroom(message: Message, state: FSMContext):
     await message.answer("👨‍🏫 Преподаватель (или 'пропустить'):")
     await state.set_state(ScheduleAdd.teacher)
 
+
 @router_admin.message(StateFilter(ScheduleAdd.teacher))
 async def add_lesson_finish(message: Message, state: FSMContext):
     data = await state.get_data()
     teacher = message.text if message.text != "пропустить" else None
-    
+
     async with async_session_maker() as session:
+        week_id = int(data.get("week_id", 1))
         new_lesson = Schedule(
-            week_type=_normalize_week_value(data.get("week_type", "1")),
+            week_id=week_id,
+            week_type=str(week_id),
             day_of_week=data["day"],
             lesson_number=data["lesson_number"],
             subject=data["subject"],
             time_start=data["time_start"],
             time_end=data["time_end"],
             classroom=data.get("classroom"),
-            teacher=teacher
+            teacher=teacher,
         )
         session.add(new_lesson)
         await session.commit()
-    
+
     await message.answer(
-        f"✅ <b>Пара добавлена!</b>",
+        "✅ <b>Пара добавлена!</b>",
         parse_mode="HTML",
-        reply_markup=Keyboards.get_admin_schedule_keyboard()
+        reply_markup=Keyboards.get_admin_schedule_keyboard(),
     )
-
-
     await state.clear()
 
 
-#Удаление пар
 @router_admin.callback_query(F.data.startswith("del_"))
 async def delete_lesson_select_day(callback: CallbackQuery, state: FSMContext):
     payload = callback.data.replace("del_", "", 1)
     payload_parts = payload.split("|")
     day_id = payload_parts[0]
-    week_type = _normalize_week_value(payload_parts[2] if len(payload_parts) > 2 else "1")
-    
-    await state.update_data(day=day_id, week_type=week_type)
-    
+    week_id = int(payload_parts[2] if len(payload_parts) > 2 else "1")
+
+    await state.update_data(day=day_id, week_id=week_id)
+
     async with async_session_maker() as session:
         result = await session.execute(
             select(Schedule)
             .where(
                 Schedule.day_of_week == day_id,
-                _week_filter(week_type)
+                _week_filter(week_id),
             )
             .order_by(Schedule.lesson_number)
         )
         lessons = result.scalars().all()
-    
-    keyboard_empty = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к дням", callback_data=f"admin_del_week_{week_type}|admin_del")]
-    ])
+
+    keyboard_empty = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к дням", callback_data=f"admin_del_week_{week_id}|admin_del")]
+        ]
+    )
 
     if not lessons:
         try:
-            await callback.message.edit_text(
-                "📭 На этот день пар нет.", 
-                reply_markup=keyboard_empty
-            )
+            await callback.message.edit_text("📭 На этот день пар нет.", reply_markup=keyboard_empty)
         except TelegramBadRequest:
             await callback.answer("📭 На этот день пар нет.", show_alert=True)
         return
-    
-    text = (
-        f"📆 {_week_title(week_type)}\n"
-        f"📅 {DAYS[day_id]}\n\n"
-        "Выберите пару для удаления:\n"
-    )
+
+    week = await _get_week_by_id(week_id)
+    week_name = _format_week_label(week) if week else f"Неделя {week_id}"
+
+    text = f"📆 {week_name}\n📅 {DAYS[day_id]}\n\nВыберите пару для удаления:\n"
     keyboard = []
     for lesson in lessons:
-        keyboard.append([InlineKeyboardButton(
-            text=f"{lesson.lesson_number}. {lesson.subject}",
-            callback_data=f"admin_del_confirm_{lesson.id}"
-        )])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_del_week_{week_type}|admin_del")])
-    
+        keyboard.append(
+            [InlineKeyboardButton(text=f"{lesson.lesson_number}. {lesson.subject}", callback_data=f"admin_del_confirm_{lesson.id}")]
+        )
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_del_week_{week_id}|admin_del")])
+
     try:
         await callback.message.edit_text(
             text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
     except TelegramBadRequest:
         await callback.answer()
         return
-    
+
     await callback.answer()
 
 
 @router_admin.callback_query(F.data.startswith("admin_del_confirm_"))
 async def confirm_delete(callback: CallbackQuery, state: FSMContext):
-    try:
-        lesson_id_str = callback.data.split("_")[-1]
-        
-        if not lesson_id_str.isdigit():
-            await callback.answer("❌ Неверный ID", show_alert=True)
+    lesson_id_str = callback.data.split("_")[-1]
+    if not lesson_id_str.isdigit():
+        await callback.answer("❌ Неверный ID", show_alert=True)
+        return
+
+    lesson_id = int(lesson_id_str)
+
+    async with async_session_maker() as session:
+        result = await session.execute(select(Schedule).where(Schedule.id == lesson_id))
+        lesson = result.scalar_one_or_none()
+
+        if not lesson:
+            await callback.answer("⚠️ Пара не найдена", show_alert=True)
             return
-        
-        lesson_id = int(lesson_id_str)
 
-        async with async_session_maker() as session:
-            result = await session.execute(select(Schedule).where(Schedule.id == lesson_id))
-            lesson = result.scalar_one_or_none()
-            
-            if not lesson:
-                await callback.answer("⚠️ Пара не найдена", show_alert=True)
-                return
+        lesson_subject = lesson.subject
+        await session.delete(lesson)
+        await session.commit()
 
-            lesson_subject = lesson.subject
-            
-            await session.delete(lesson)
-            await session.commit()
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>{lesson_subject}</b> удалена!",
+            reply_markup=Keyboards.get_admin_schedule_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            f"✅ <b>{lesson_subject}</b> удалена!",
+            reply_markup=Keyboards.get_admin_schedule_keyboard(),
+            parse_mode="HTML",
+        )
 
-
-        from_menu_keyboard = Keyboards.get_admin_schedule_keyboard()
-        
-        try:
-            await callback.message.edit_text(
-                f"✅ <b>{lesson_subject}</b> удалена!",
-                reply_markup=from_menu_keyboard,  
-                parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            try:
-                await callback.message.delete()
-            except:
-                pass
-            await callback.message.answer(
-                f"✅ <b>{lesson_subject}</b> удалена!",
-                reply_markup=from_menu_keyboard,
-                parse_mode="HTML"
-            )
-        
-        await callback.answer()  
-        await state.clear()
-        
-    except Exception as e:
-        print(f"❌ Ошибка при удалении: {type(e).__name__}: {e}")
-        
-        error_msg = f"❌ Ошибка: {type(e).__name__}"
-        await callback.answer(error_msg[:200], show_alert=True)
+    await callback.answer()
+    await state.clear()

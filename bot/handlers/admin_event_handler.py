@@ -346,7 +346,7 @@ async def execute_delete_event(callback: types.CallbackQuery, session: AsyncSess
     await callback.answer(f"✅ Событие «{event.title}» удалено", show_alert=False)
     await view_all_events(callback, session)
     await callback.message.edit_text(
-        "👨‍🏫 <b>Панель старосты:</b>",
+        "👩‍🏫 <b>Панель старосты:</b>",
         reply_markup=Keyboards.get_admin_main_keyboard(),
         parse_mode="HTML"
     )

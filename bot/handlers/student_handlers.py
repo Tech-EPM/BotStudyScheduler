@@ -1,126 +1,127 @@
+import datetime as dt
+import logging
+
 from aiogram import Router, F
-from aiogram.filters import Command 
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest
 
-from aiogram.fsm.context import FSMContext
-
-from bot.utils.filters import IsStudent
 from bot.utils.keyboards import Keyboards, DAYS
 from bot.db.database import async_session_maker
 from sqlalchemy import select, or_
-from bot.db.models import Schedule
-
-import logging
+from bot.db.models import Schedule, ScheduleWeek
 
 
 router_student = Router()
 
 
-def _normalize_week_value(raw_value: str | None) -> str:
-    if raw_value is None:
-        return "1"
-    value = str(raw_value).strip().lower()
-    if value.startswith("week") and value[4:].isdigit():
-        value = value[4:]
-    if value.isdigit():
-        return str(int(value))
-    return value
+def _week_filter(week_id: int):
+    return or_(
+        Schedule.week_id == week_id,
+        Schedule.week_type == str(week_id),
+        Schedule.week_type == f"week{week_id}",
+    )
 
 
-def _week_title(week_value: str) -> str:
-    return f"{week_value} неделя"
-
-
-def _week_sort_key(value: str):
-    return (0, int(value)) if value.isdigit() else (1, value)
-
-
-def _week_filter(week_value: str):
-    conditions = [
-        Schedule.week_type == week_value,
-        Schedule.week_type == f"week{week_value}",
-    ]
-    if week_value == "1":
-        conditions.append(Schedule.week_type.is_(None))
-    return or_(*conditions)
-
-
-async def _get_available_weeks() -> list[str]:
+async def _get_current_week() -> ScheduleWeek | None:
+    today = dt.date.today()
     async with async_session_maker() as session:
-        result = await session.execute(select(Schedule.week_type).distinct())
-        raw_weeks = result.scalars().all()
+        result = await session.execute(
+            select(ScheduleWeek)
+            .where(
+                ScheduleWeek.is_active == 1,
+                ScheduleWeek.start_date <= today,
+                ScheduleWeek.end_date >= today,
+            )
+            .order_by(ScheduleWeek.start_date.desc())
+        )
+        return result.scalars().first()
 
-    weeks = {_normalize_week_value(value) for value in raw_weeks}
-    weeks.discard("")
-    if not weeks:
-        return []
-    return sorted(weeks, key=_week_sort_key)
+
+def _week_label(week: ScheduleWeek) -> str:
+    return f"{week.title} ({week.start_date.strftime('%d.%m')} - {week.end_date.strftime('%d.%m')})"
+
+
+async def _build_week_schedule_text(week: ScheduleWeek) -> str:
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(Schedule)
+            .where(_week_filter(week.id))
+            .order_by(Schedule.day_of_week, Schedule.lesson_number)
+        )
+        lessons = result.scalars().all()
+
+    by_day: dict[str, list[Schedule]] = {day: [] for day in DAYS.keys()}
+    for lesson in lessons:
+        by_day.setdefault(lesson.day_of_week, []).append(lesson)
+
+    lines = [f"📆 <b>{_week_label(week)}</b>"]
+    for day_id in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday"):
+        lines.append(f"\n<b>{DAYS[day_id]}</b>")
+        day_lessons = sorted(by_day.get(day_id, []), key=lambda l: l.lesson_number)
+        if not day_lessons:
+            lines.append("• Пар нет")
+            continue
+
+        for lesson in day_lessons:
+            row = f"• {lesson.lesson_number}. {lesson.time_start}-{lesson.time_end} {lesson.subject}"
+            extra = []
+            if lesson.classroom:
+                extra.append(f"ауд. {lesson.classroom}")
+            if lesson.teacher:
+                extra.append(lesson.teacher)
+            if extra:
+                row += f" ({', '.join(extra)})"
+            lines.append(row)
+
+    return "\n".join(lines)
 
 
 @router_student.message(F.text == "📅 Расписание")
-@router_student.message(Command('schedule'))
+@router_student.message(Command("schedule"))
 async def cmd_schedule(message: Message):
-    weeks = await _get_available_weeks()
-    if not weeks:
-        await message.answer("📭 Расписание пока не добавлено.")
+    week = await _get_current_week()
+    if not week:
+        await message.answer("📭 Актуальная неделя не настроена. Попросите администратора добавить даты недели.")
         return
+
     await message.answer(
-        "📆 <b>Выберите неделю:</b>",
-        reply_markup=Keyboards.get_student_weeks_keyboard(weeks=weeks, from_menu="main"),
-        parse_mode="HTML"
-    )
-
-
-@router_student.callback_query(F.data.startswith("week_"))
-async def show_week_days(callback: CallbackQuery):
-    try:
-        week_part, from_menu = callback.data.split("|")
-        week_type = _normalize_week_value(week_part.replace("week_", ""))
-    except ValueError:
-        week_type = _normalize_week_value(callback.data.replace("week_", ""))
-        from_menu = "main"
-
-    await callback.message.edit_text(
-        f"📆 <b>{_week_title(week_type)}</b>\n\nВыберите день недели:",
+        f"📆 <b>Актуальная неделя:</b> {week.title}\n"
+        f"<i>{week.start_date.strftime('%d.%m.%Y')} - {week.end_date.strftime('%d.%m.%Y')}</i>\n\n"
+        "Выберите день недели:",
         reply_markup=Keyboards.get_student_days_keyboard(
             action="view",
-            from_menu=from_menu,
-            week_type=week_type
+            from_menu="current",
+            week_type=str(week.id),
+            full_schedule_callback=f"student_week_full_{week.id}",
+            include_week_select=False,
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
-    await callback.answer()
 
 
 @router_student.callback_query(F.data.startswith("day_"))
 async def show_day_schedule(callback: CallbackQuery):
     try:
-        day_part, from_menu, week_type = callback.data.split("|")
+        day_part, from_menu, week_raw = callback.data.split("|")
         day_id = day_part.replace("day_", "")
-        week_type = _normalize_week_value(week_type)
+        week_id = int(week_raw)
     except ValueError:
-        parts = callback.data.split("|")
-        day_id = parts[0].replace("day_", "")
-        from_menu = "main"
-        week_type = "1"
-    
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+
     day_name = DAYS.get(day_id, day_id)
-    week_name = _week_title(week_type)
-    
 
     async with async_session_maker() as session:
+        week = await session.get(ScheduleWeek, week_id)
         result = await session.execute(
             select(Schedule)
-            .where(
-                Schedule.day_of_week == day_id,
-                _week_filter(week_type)
-            )
+            .where(Schedule.day_of_week == day_id, _week_filter(week_id))
             .order_by(Schedule.lesson_number)
         )
         lessons = result.scalars().all()
 
-
+    week_name = _week_label(week) if week else f"Неделя {week_id}"
     if not lessons:
         text = f"📭 <b>{week_name}</b> • <b>{day_name}</b>\n\nНа этот день пар нет."
     else:
@@ -134,23 +135,19 @@ async def show_day_schedule(callback: CallbackQuery):
                 text += f"   👨‍🏫 {lesson.teacher}\n"
             text += "\n"
 
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад к дням", callback_data=f"back_to_days_{from_menu}|{week_type}")],
-            [InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"back_to_weeks_{from_menu}")],
-        ])
-
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к дням", callback_data=f"back_to_days_current|{week_id}")],
+            [InlineKeyboardButton(text="📋 Полное расписание", callback_data=f"student_week_full_{week_id}")],
+        ]
+    )
 
     try:
-        await callback.message.edit_text(
-            text, 
-            reply_markup=keyboard, 
-            parse_mode="HTML"
-        )
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except TelegramBadRequest:
         await callback.answer()
         return
-    
+
     try:
         await callback.answer()
     except TelegramBadRequest as e:
@@ -161,65 +158,55 @@ async def show_day_schedule(callback: CallbackQuery):
             raise
 
 
+@router_student.callback_query(F.data.startswith("student_week_full_"))
+async def student_full_week(callback: CallbackQuery):
+    week_id = int(callback.data.replace("student_week_full_", ""))
+    async with async_session_maker() as session:
+        week = await session.get(ScheduleWeek, week_id)
 
-@router_student.callback_query(F.data == "goto_back_student")
-async def goto_admin_panel(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "👨‍🏫 <b>Панель студента:</b>\n",
-        reply_markup=Keyboards.get_student_main_keyboard(),
-        parse_mode="HTML"
-    )
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
+
+    text = await _build_week_schedule_text(week)
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer("Полное расписание отправлено")
+
+
+@router_student.callback_query(F.data.startswith("back_to_days_"))
+async def back_to_days(callback: CallbackQuery):
+    payload = callback.data.replace("back_to_days_", "")
+    parts = payload.split("|")
+    week_id = int(parts[1] if len(parts) > 1 else 1)
+
+    async with async_session_maker() as session:
+        week = await session.get(ScheduleWeek, week_id)
+
+    if not week:
+        await callback.answer("Неделя не найдена", show_alert=True)
+        return
+
+    try:
+        await callback.message.edit_text(
+            f"📆 <b>{_week_label(week)}</b>\n\nВыберите день недели:",
+            reply_markup=Keyboards.get_student_days_keyboard(
+                action="view",
+                from_menu="current",
+                week_type=str(week.id),
+                full_schedule_callback=f"student_week_full_{week.id}",
+                include_week_select=False,
+            ),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.answer()
+        return
+
     await callback.answer()
 
 
-# Возврат назад
-@router_student.callback_query(F.data.startswith("back_to_"))
-async def back_handler(callback: CallbackQuery):
-    if callback.data.startswith("back_to_weeks_"):
-        from_menu = callback.data.replace("back_to_weeks_", "")
-        weeks = await _get_available_weeks()
-        if not weeks:
-            await callback.message.edit_text("📭 Расписание пока не добавлено.")
-            await callback.answer()
-            return
-        try:
-            await callback.message.edit_text(
-                "📆 <b>Выберите неделю:</b>",
-                reply_markup=Keyboards.get_student_weeks_keyboard(weeks=weeks, from_menu=from_menu),
-                parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            await callback.answer()
-            return
-        await callback.answer()
-        return
-
-    if callback.data.startswith("back_to_days_"):
-        payload = callback.data.replace("back_to_days_", "")
-        parts = payload.split("|")
-        from_menu = parts[0] if parts else "main"
-        week_type = _normalize_week_value(parts[1] if len(parts) > 1 else "1")
-
-        try:
-            await callback.message.edit_text(
-                f"📆 <b>{_week_title(week_type)}</b>\n\nВыберите день недели:",
-                reply_markup=Keyboards.get_student_days_keyboard(
-                    action="view",
-                    from_menu=from_menu,
-                    week_type=week_type
-                ),
-                parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            await callback.answer()
-            return
-
-        await callback.answer()
-        return
-
-
 @router_student.message(F.text == "🆘 Помощь")
-@router_student.message(Command('help'))
+@router_student.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
         "🆘 <b>Доступные команды:</b>\n\n"
@@ -227,5 +214,5 @@ async def cmd_help(message: Message):
         "/schedule - Моё расписание\n"
         "/view_file - Просмотр файлов\n"
         "/help - Эта справка",
-        parse_mode="HTML"
+        parse_mode="HTML",
     )

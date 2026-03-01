@@ -3,14 +3,21 @@ from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 
 from aiogram.filters import StateFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.db.models import FileDocument, User
-from bot.utils.file_storage import save_file, allowed_file, get_file_extension, get_file_full_path, delete_file_async
+from bot.utils.file_storage import (
+    save_file,
+    allowed_file,
+    get_file_extension,
+    get_file_full_path,
+    delete_file_async,
+    sanitize_path_component,
+)
 from bot.utils.keyboards import Keyboards
 from bot.utils.state import FileUpload
 
@@ -22,6 +29,22 @@ import os
 
 
 router_files_admin = Router()
+
+
+async def _ask_common_file_category(target: types.Message | types.CallbackQuery):
+    msg = target.message if isinstance(target, types.CallbackQuery) else target
+    text = (
+        "📂 <b>Выберите подкатегорию материала:</b>\n\n"
+        "• <code>lectures</code> — Лекции\n"
+        "• <code>practice</code> — Практика\n"
+        "• <code>labs</code> — Лабораторные\n"
+        "• <code>other</code> — Другое\n\n"
+        "Или напишите свою категорию латиницей:"
+    )
+    if isinstance(target, types.CallbackQuery):
+        await msg.edit_text(text, reply_markup=Keyboards.get_file_categories(), parse_mode="HTML")
+    else:
+        await msg.answer(text, reply_markup=Keyboards.get_file_categories(), parse_mode="HTML")
 
 
 @router_files_admin.callback_query(F.data == "admin_add_common_files")
@@ -37,18 +60,53 @@ async def start_file_upload(callback: types.CallbackQuery, state: FSMContext, se
         await callback.answer("❌ У вас нет прав для загрузки файлов", show_alert=True)
         return
     
-    await state.set_state(FileUpload.waiting_for_category)
+    rows = await session.execute(
+        select(func.min(FileDocument.id), FileDocument.subject)
+        .where(FileDocument.subject.isnot(None))
+        .group_by(FileDocument.subject)
+        .order_by(FileDocument.subject)
+    )
+    keyboard = []
+    for rep_id, subject in rows.all():
+        if not subject:
+            continue
+        keyboard.append([InlineKeyboardButton(text=f"📘 {subject}", callback_data=f"common_subject_pick_{rep_id}")])
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_upload")])
+
+    await state.set_state(FileUpload.waiting_for_subject)
     await callback.message.edit_text(
-        "📂 <b>Выберите категорию для файла:</b>\n\n"
-        "• <code>math</code> — Математика\n"
-        "• <code>programming</code> — Программирование\n"
-        "• <code>physics</code> — Физика\n"
-        "• <code>other</code> — Другое\n\n"
-        "Или напишите свою категорию латиницей:",
-        reply_markup=Keyboards.get_file_categories(),
+        "📚 <b>Введите название предмета на русском</b>\n"
+        "(например: <code>Математический анализ</code>)\n\n"
+        "Или выберите уже существующий предмет:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router_files_admin.callback_query(FileUpload.waiting_for_subject, F.data.startswith("common_subject_pick_"))
+async def subject_selected(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    file_id = int(callback.data.replace("common_subject_pick_", ""))
+    doc = await session.get(FileDocument, file_id)
+    if not doc or not doc.subject:
+        await callback.answer("❌ Предмет не найден", show_alert=True)
+        return
+
+    await state.update_data(subject=doc.subject)
+    await state.set_state(FileUpload.waiting_for_category)
+    await _ask_common_file_category(callback)
+    await callback.answer()
+
+
+@router_files_admin.message(FileUpload.waiting_for_subject, F.text)
+async def subject_text_received(message: types.Message, state: FSMContext):
+    subject = message.text.strip()
+    if len(subject) < 2:
+        await message.answer("❌ Название предмета слишком короткое.")
+        return
+    await state.update_data(subject=subject)
+    await state.set_state(FileUpload.waiting_for_category)
+    await _ask_common_file_category(message)
 
 
 # === Обработчик выбора категории ===
@@ -134,9 +192,11 @@ async def file_received(message: types.Message, state: FSMContext, session: Asyn
     # --- 2. Сохранение файла (async!) ---
     data = await state.get_data()
     category = data.get("category", "other")
+    subject = data.get("subject", "Без предмета")
+    subject_dir = sanitize_path_component(subject)
     
     try:
-        relative_path = await save_file(file_bytes, original_name, category)
+        relative_path = await save_file(file_bytes, original_name, f"{subject_dir}/{category}")
         logging.info(f"✅ File saved: {relative_path}")
     except Exception as e:
         logging.error(f"File save error: {e}")
@@ -149,7 +209,8 @@ async def file_received(message: types.Message, state: FSMContext, session: Asyn
         file_size=file_size,
         file_extension=file_extension,
         relative_path=relative_path,
-        category=category
+        category=category,
+        subject=subject
     )
     
     await state.set_state(FileUpload.waiting_for_filename)
@@ -180,6 +241,7 @@ async def filename_received(message: types.Message, state: FSMContext, session: 
     file_extension = data.get("file_extension", "jpg")
     relative_path = data.get("relative_path", "")
     category = data.get("category", "other")
+    subject = data.get("subject", "Без предмета")
     file_size = data.get("file_size", 0)
     
 
@@ -254,6 +316,7 @@ async def filename_received(message: types.Message, state: FSMContext, session: 
         file_path=relative_path,
         file_extension=file_extension,
         category=category,
+        subject=subject,
         uploaded_by=uploader.id if uploader else 1,
         file_size=file_size
     )
@@ -277,6 +340,7 @@ async def filename_received(message: types.Message, state: FSMContext, session: 
     await message.answer(
         f"✅ <b>Файл загружен!</b>\n\n"
         f"📄 Имя: <code>{final_filename}</code>\n"
+        f"📚 Предмет: {subject}\n"
         f"📂 Категория: {category}\n"
         f"💾 Размер: {file_size / 1024:.1f} КБ",
         parse_mode="HTML",
@@ -313,6 +377,7 @@ async def skip_filename(callback: types.CallbackQuery, state: FSMContext, sessio
     
     file_extension = data.get("file_extension", "jpg")
     category = data.get("category", "other")
+    subject = data.get("subject", "Без предмета")
     file_size = data.get("file_size", 0)
     
     # === Запись в БД ===
@@ -325,6 +390,7 @@ async def skip_filename(callback: types.CallbackQuery, state: FSMContext, sessio
         file_path=relative_path,
         file_extension=file_extension,
         category=category,
+        subject=subject,
         uploaded_by=uploader.id if uploader else 1,
         file_size=file_size
     )
@@ -348,6 +414,7 @@ async def skip_filename(callback: types.CallbackQuery, state: FSMContext, sessio
         await callback.message.edit_text(
             f"✅ <b>Файл загружен!</b>\n\n"
             f"📄 Имя: <code>{file_name}</code>\n"
+            f"📚 Предмет: {subject}\n"
             f"📂 Категория: {category}\n"
             f"💾 Размер: {file_size / 1024:.1f} КБ",
             parse_mode="HTML",
@@ -414,7 +481,7 @@ async def show_files_for_delete(callback: types.CallbackQuery, session: AsyncSes
     for f in files[:20]:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"🗑️ {f.file_name} ({f.category})",
+                text=f"🗑️ {f.file_name} ({f.subject or 'Без предмета'} / {f.category})",
                 callback_data=f"delete_file_{f.id}"
             )
         ])
@@ -449,6 +516,7 @@ async def confirm_delete_file(callback: types.CallbackQuery, session: AsyncSessi
     await callback.message.edit_text(
         f"⚠️ <b>Подтвердите удаление:</b>\n\n"
         f"📄 {doc.file_name}\n"
+        f"📚 Предмет: {doc.subject or 'Без предмета'}\n"
         f"📂 Категория: {doc.category}\n"
         f"💾 Размер: {doc.file_size / 1024:.1f} КБ\n\n"
         "Файл будет удалён из базы и с диска!",

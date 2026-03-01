@@ -3,7 +3,7 @@ import logging
 from aiogram import Router, F, types
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 
 from bot.db.models import SessionFile
 from bot.utils.keyboards import Keyboards
@@ -23,31 +23,28 @@ router_session_files_student = Router()
 
 @router_session_files_student.callback_query(F.data == "view_session_files")
 async def show_session_categories(callback: types.CallbackQuery, session: AsyncSession):
-    """Показывает категории из таблицы SessionFile"""
-    
-    # Получаем уникальные категории
-    stmt = select(SessionFile.category).where(SessionFile.category.isnot(None)).distinct()
+    """Показывает разделы сессий из таблицы SessionFile"""
+
+    stmt = (
+        select(func.min(SessionFile.id), func.coalesce(SessionFile.session_group, "Сессия"))
+        .group_by(func.coalesce(SessionFile.session_group, "Сессия"))
+        .order_by(func.coalesce(SessionFile.session_group, "Сессия"))
+    )
     result = await session.execute(stmt)
-    categories = [cat for cat in result.scalars().all() if cat]
-    
-    if not categories:
+    groups = [(file_id, name) for file_id, name in result.all() if name]
+
+    if not groups:
         await callback.answer("📭 Пока нет файлов сессий", show_alert=True)
         return
-    
-    # Формируем список для отображения
-    cat_list = "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories)))
-    
-    # Клавиатура с категориями
-    keyboard = []
-    for cat in sorted(set(categories)):
-        keyboard.append([
-            InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"session_files_in_{cat}")
-        ])
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"🗂 {name}", callback_data=f"session_group_{file_id}")]
+        for file_id, name in groups
+    ]
     
     await callback.message.edit_text(
         f"🎓 <b>Файлы учебных сессий</b>\n\n"
-        f"📂 Доступные категории:\n{cat_list}\n\n"
-        f"<i>Выберите категорию для просмотра файлов</i>",
+        f"<i>Выберите сессию</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
@@ -62,12 +59,15 @@ async def show_session_categories(callback: types.CallbackQuery, session: AsyncS
 async def open_session_files_from_menu(message: types.Message, session: AsyncSession):
     """Студент нажал кнопку '🎓 Файлы сессий' в главном меню"""
     
-    stmt = select(SessionFile.category).where(SessionFile.category.isnot(None)).distinct()
-    result = await session.execute(stmt)
-    categories = [cat for cat in result.scalars().all() if cat]
+    result = await session.execute(
+        select(func.min(SessionFile.id), func.coalesce(SessionFile.session_group, "Сессия"))
+        .group_by(func.coalesce(SessionFile.session_group, "Сессия"))
+        .order_by(func.coalesce(SessionFile.session_group, "Сессия"))
+    )
+    groups = [(file_id, name) for file_id, name in result.all() if name]
     
 
-    if not categories:
+    if not groups:
         await message.answer(
             "📭 <b>Пока нет файлов сессий</b>\n\n"
             "Файлы появятся здесь, когда администратор их добавит.",
@@ -76,36 +76,164 @@ async def open_session_files_from_menu(message: types.Message, session: AsyncSes
         )
         return
     
-    # Клавиатура с категориями
-    keyboard = []
-    for cat in sorted(set(categories)):
-        keyboard.append([
-            InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"session_files_in_{cat}")
-        ])
+    keyboard = [
+        [InlineKeyboardButton(text=f"🗂 {name}", callback_data=f"session_group_{file_id}")]
+        for file_id, name in groups
+    ]
     
     await message.answer(
         "🎓 <b>Файлы учебных сессий</b>\n\n"
-        "📂 <b>Доступные категории:</b>\n\n" +
-        "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories))),
+        "Выберите сессию:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
 
 # ==========================================
-# 2. ПОКАЗАТЬ ФАЙЛЫ В КАТЕГОРИИ СЕССИЙ
+# 2. ВЫБОР ПРЕДМЕТА В СЕССИИ
 # ==========================================
+@router_session_files_student.callback_query(F.data.startswith("session_group_"))
+async def show_session_subjects(callback: types.CallbackQuery, session: AsyncSession):
+    file_id = callback.data.replace("session_group_", "")
+    doc = await session.get(SessionFile, file_id)
+    if not doc:
+        await callback.answer("❌ Раздел сессии не найден", show_alert=True)
+        return
+
+    group_name = doc.session_group or "Сессия"
+    group_filter = SessionFile.session_group.is_(None) if doc.session_group is None else (SessionFile.session_group == doc.session_group)
+
+    rows = await session.execute(
+        select(func.min(SessionFile.id), SessionFile.subject)
+        .where(group_filter)
+        .group_by(SessionFile.subject)
+        .order_by(SessionFile.subject)
+    )
+    subjects = [(rep_id, subject or "Без предмета") for rep_id, subject in rows.all()]
+    if not subjects:
+        await callback.answer("📭 В этой сессии пока нет предметов", show_alert=True)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"📘 {subject}", callback_data=f"session_subject_{rep_id}")]
+        for rep_id, subject in subjects
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 К сессиям", callback_data="view_session_files")])
+
+    await callback.message.edit_text(
+        f"🗂 <b>{group_name}</b>\n\nВыберите предмет:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# ==========================================
+# 3. ВЫБОР КАТЕГОРИИ В ПРЕДМЕТЕ
+# ==========================================
+@router_session_files_student.callback_query(F.data.startswith("session_subject_"))
+async def show_session_categories_in_subject(callback: types.CallbackQuery, session: AsyncSession):
+    file_id = callback.data.replace("session_subject_", "")
+    doc = await session.get(SessionFile, file_id)
+    if not doc:
+        await callback.answer("❌ Предмет не найден", show_alert=True)
+        return
+
+    group_name = doc.session_group or "Сессия"
+    subject_name = doc.subject or "Без предмета"
+    group_filter = SessionFile.session_group.is_(None) if doc.session_group is None else (SessionFile.session_group == doc.session_group)
+    subject_filter = SessionFile.subject.is_(None) if doc.subject is None else (SessionFile.subject == doc.subject)
+
+    rows = await session.execute(
+        select(func.min(SessionFile.id), SessionFile.category)
+        .where(group_filter, subject_filter)
+        .group_by(SessionFile.category)
+        .order_by(SessionFile.category)
+    )
+    categories = [(rep_id, cat) for rep_id, cat in rows.all() if cat]
+    if not categories:
+        await callback.answer("📭 В этом предмете пока нет категорий", show_alert=True)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"session_cat_{rep_id}")]
+        for rep_id, cat in categories
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 К предметам", callback_data=f"session_group_{file_id}")])
+
+    await callback.message.edit_text(
+        f"🗂 <b>{group_name}</b>\n📘 <b>{subject_name}</b>\n\nВыберите категорию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# ==========================================
+# 4. ПОКАЗАТЬ ФАЙЛЫ В КАТЕГОРИИ СЕССИЙ
+# ==========================================
+
+@router_session_files_student.callback_query(F.data.startswith("session_cat_"))
+async def show_session_files_by_cat_id(callback: types.CallbackQuery, session: AsyncSession):
+    rep_id = callback.data.replace("session_cat_", "")
+    rep = await session.get(SessionFile, rep_id)
+    if not rep:
+        await callback.answer("❌ Категория не найдена", show_alert=True)
+        return
+
+    stmt = select(SessionFile).where(
+        (SessionFile.session_group.is_(None) if rep.session_group is None else (SessionFile.session_group == rep.session_group)),
+        (SessionFile.subject.is_(None) if rep.subject is None else (SessionFile.subject == rep.subject)),
+        SessionFile.category == rep.category,
+    ).order_by(desc(SessionFile.created_at)).limit(20)
+
+    result = await session.execute(stmt)
+    files = result.scalars().all()
+    if not files:
+        await callback.answer("📭 В этой категории пока пусто", show_alert=True)
+        return
+
+    file_list = "\n".join([
+        f"📄 <b>{f.original_filename}</b>\n"
+        f"   <i>💾 {f.file_size / 1024:.1f} КБ • {f.created_at.strftime('%d.%m.%Y') if f.created_at else 'N/A'}</i>"
+        for f in files[:10]
+    ])
+
+    keyboard = []
+    for f in files[:10]:
+        short_name = f.original_filename[:25] + "..." if len(f.original_filename) > 25 else f.original_filename
+        keyboard.append([InlineKeyboardButton(text=f"📥 {short_name}", callback_data=f"download_session_file_{f.id}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 К разделам", callback_data="view_session_files")])
+
+    await callback.message.edit_text(
+        f"🗂 <b>{rep.session_group or 'Сессия'}</b>\n📘 <b>{rep.subject or 'Без предмета'}</b>\n📂 <b>{rep.category}</b>\n\n{file_list}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
 
 @router_session_files_student.callback_query(F.data.startswith("session_files_in_"))
 async def show_session_files_in_category(callback: types.CallbackQuery, session: AsyncSession):
     """Показывает файлы из SessionFile в выбранной категории"""
-    
-    category = callback.data.replace("session_files_in_", "")
-    
-    # Запрос файлов
-    stmt = select(SessionFile).where(
-        SessionFile.category == category
-    ).order_by(desc(SessionFile.created_at)).limit(20)
+
+    payload = callback.data.replace("session_files_in_", "")
+    if "|" in payload:
+        group, subject, category = payload.split("|", 2)
+        stmt = select(SessionFile).where(
+            SessionFile.session_group == group,
+            SessionFile.subject == subject,
+            SessionFile.category == category,
+        ).order_by(desc(SessionFile.created_at)).limit(20)
+        back_text = "🔙 К предметам"
+        back_callback = "view_session_files"
+        header = f"🗂 <b>{group}</b>\n📘 <b>{subject}</b>\n📂 <b>{category}</b>"
+    else:
+        category = payload
+        stmt = select(SessionFile).where(SessionFile.category == category).order_by(desc(SessionFile.created_at)).limit(20)
+        back_text = "🔙 К разделам"
+        back_callback = "view_session_files"
+        header = f"📂 <b>{category}</b>"
     
     result = await session.execute(stmt)
     files = result.scalars().all()
@@ -132,10 +260,10 @@ async def show_session_files_in_category(callback: types.CallbackQuery, session:
             )
         ])
     
-    keyboard.append([InlineKeyboardButton(text="🔙 К категориям", callback_data="view_session_files")])
+    keyboard.append([InlineKeyboardButton(text=back_text, callback_data=back_callback)])
     
     await callback.message.edit_text(
-        f"📂 <b>Категория:</b> <code>{category}</code> (файлы сессий)\n\n{file_list}",
+        f"{header}\n\n{file_list}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
@@ -143,7 +271,7 @@ async def show_session_files_in_category(callback: types.CallbackQuery, session:
 
 
 # ==========================================
-# 3. СКАЧИВАНИЕ ФАЙЛА СЕССИИ
+# 5. СКАЧИВАНИЕ ФАЙЛА СЕССИИ
 # ==========================================
 
 @router_session_files_student.callback_query(F.data.startswith("download_session_file_"))

@@ -18,6 +18,9 @@ class AdminState(StatesGroup):
 
 class ScheduleAdd(StatesGroup):
     week_number = State()
+    week_title = State()
+    week_start_date = State()
+    week_end_date = State()
     lesson_number = State()
     subject = State()
     time_start = State()
@@ -27,12 +30,15 @@ class ScheduleAdd(StatesGroup):
 
 
 class FileUpload(StatesGroup):
+    waiting_for_subject = State()
     waiting_for_category = State()
     waiting_for_file = State()
     waiting_for_filename = State()
 
 
 class SessionFileUpload(StatesGroup):
+    waiting_for_session_group = State()
+    waiting_for_subject = State()
     waiting_for_category = State()
     waiting_for_file = State()  # ← Это ДРУГОЕ состояние, несмотря на одинаковое имя!
     waiting_for_filename = State()
@@ -49,3 +55,11 @@ class ReminderState(StatesGroup):
     waiting_for_date = State()      
     waiting_for_time = State()
     waiting_for_text = State()
+
+
+class SeminarTaskState(StatesGroup):
+    waiting_for_subject = State()
+    waiting_for_title = State()
+    waiting_for_description = State()
+    waiting_for_file = State()
+    waiting_for_edit_value = State()

@@ -16,7 +16,13 @@ import shutil
 # Импорт моделей
 from bot.db.models import SessionFile, User
 # Импорт утилит
-from bot.utils.file_storage import allowed_file, get_file_full_path, delete_file_async, save_session_file
+from bot.utils.file_storage import (
+    allowed_file,
+    get_file_full_path,
+    delete_file_async,
+    save_session_file,
+    sanitize_path_component,
+)
 from bot.utils.keyboards import Keyboards
 from bot.utils.state import SessionFileUpload
 
@@ -41,7 +47,66 @@ async def start_session_file_upload(callback: types.CallbackQuery, state: FSMCon
         await callback.answer("❌ У вас нет прав для этой операции", show_alert=True)
         return
 
+    rows = await session.execute(
+        select(func.min(SessionFile.id), SessionFile.session_group)
+        .where(SessionFile.session_group.isnot(None))
+        .group_by(SessionFile.session_group)
+        .order_by(SessionFile.session_group)
+    )
+    keyboard = []
+    for rep_id, group_name in rows.all():
+        if not group_name:
+            continue
+        keyboard.append([InlineKeyboardButton(text=f"🗂 {group_name}", callback_data=f"sess_group_pick_{rep_id}")])
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_upload")])
+
     await callback.message.edit_text(
+        "🗂 <b>Введите название сессии</b>\n"
+        "(например: <code>Сессия 1</code>)\n\n"
+        "Или выберите существующую:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+    await state.set_state(SessionFileUpload.waiting_for_session_group)
+
+
+@router_session_files_admin.callback_query(SessionFileUpload.waiting_for_session_group, F.data.startswith("sess_group_pick_"))
+async def session_group_selected(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    file_id = callback.data.replace("sess_group_pick_", "")
+    doc = await session.get(SessionFile, file_id)
+    if not doc or not doc.session_group:
+        await callback.answer("❌ Раздел сессии не найден", show_alert=True)
+        return
+    await state.update_data(session_group=doc.session_group)
+    await state.set_state(SessionFileUpload.waiting_for_subject)
+    await callback.message.edit_text(
+        "📘 Введите предмет (на русском):",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router_session_files_admin.message(SessionFileUpload.waiting_for_session_group, F.text)
+async def session_group_text_received(message: types.Message, state: FSMContext):
+    session_group = message.text.strip()
+    if len(session_group) < 2:
+        await message.answer("❌ Название слишком короткое.")
+        return
+    await state.update_data(session_group=session_group)
+    await state.set_state(SessionFileUpload.waiting_for_subject)
+    await message.answer("📘 Введите предмет (на русском):")
+
+
+@router_session_files_admin.message(SessionFileUpload.waiting_for_subject, F.text)
+async def session_subject_text_received(message: types.Message, state: FSMContext):
+    subject = message.text.strip()
+    if len(subject) < 2:
+        await message.answer("❌ Название предмета слишком короткое.")
+        return
+    await state.update_data(subject=subject)
+    await state.set_state(SessionFileUpload.waiting_for_category)
+    await message.answer(
         "📂 <b>Выберите подкатегорию для файла сессии:</b>\n\n"
         "• <code>tickets</code> — Билеты\n"
         "• <code>answers</code> — Ответы/Шпаргалки\n"
@@ -51,15 +116,13 @@ async def start_session_file_upload(callback: types.CallbackQuery, state: FSMCon
         reply_markup=Keyboards.get_session_file_categories(),
         parse_mode="HTML"
     )
-    await callback.answer()
-    await state.set_state(SessionFileUpload.waiting_for_category)
 
 
 # ==========================================
 # 2. ВЫБОР КАТЕГОРИИ -> ОЖИДАНИЕ ФАЙЛА
 # ==========================================
 
-@router_session_files_admin.callback_query(F.data.startswith("category_"))
+@router_session_files_admin.callback_query(SessionFileUpload.waiting_for_category, F.data.startswith("category_"))
 async def session_category_selected(callback: types.CallbackQuery, state: FSMContext):
     """Пользователь выбрал категорию → ждём файл"""
     category = callback.data.replace("category_", "")
@@ -147,9 +210,15 @@ async def session_file_received(message: types.Message, state: FSMContext, sessi
     # --- 2. Сохранение на диск с подкатегорией ---
 
     data = await state.get_data()
-    category = data.get("category", "other")  # например, "tickets"
+    category = data.get("category", "other")
+    session_group = data.get("session_group", "Сессия")
+    subject = data.get("subject", "Без предмета")
 
-    storage_path = f"{category}"
+    storage_path = (
+        f"{sanitize_path_component(session_group)}/"
+        f"{sanitize_path_component(subject)}/"
+        f"{sanitize_path_component(category)}"
+    )
 
 
     logger.info(f"🔍 About to save file with storage_path: {storage_path}")
@@ -168,12 +237,16 @@ async def session_file_received(message: types.Message, state: FSMContext, sessi
         file_size=file_size,
         file_ext=file_ext,
         relative_path=relative_path,
-        category=category
+        category=category,
+        session_group=session_group,
+        subject=subject,
     )
     await state.set_state(SessionFileUpload.waiting_for_filename)
 
     await message.answer(
         f"✅ <b>Файл получен!</b>\n\n"
+        f"🗂 Сессия: <b>{session_group}</b>\n"
+        f"📘 Предмет: <b>{subject}</b>\n"
         f"📄 Имя: <code>{original_name}</code>\n"
         f"💾 Размер: {file_size / 1024:.1f} КБ\n"
         f"📁 Папка: <code>session_files/{category}/</code>\n\n"
@@ -201,6 +274,8 @@ async def session_filename_received(message: types.Message, state: FSMContext, s
     file_ext = data.get("file_ext", "")
     relative_path = data.get("relative_path")
     category = data.get("category", "other")
+    session_group = data.get("session_group", "Сессия")
+    subject = data.get("subject", "Без предмета")
     file_size = data.get("file_size")
     
     # Логика переименования файла на диске
@@ -230,7 +305,9 @@ async def session_filename_received(message: types.Message, state: FSMContext, s
         original_filename=final_filename,
         stored_path=relative_path,
         file_size=file_size,
-        category=category
+        category=category,
+        session_group=session_group,
+        subject=subject,
     )
     
     
@@ -248,6 +325,8 @@ async def session_filename_received(message: types.Message, state: FSMContext, s
     
     await message.answer(
         f"✅ <b>Файл загружен!</b>\n\n"
+        f"🗂 Сессия: {session_group}\n"
+        f"📘 Предмет: {subject}\n"
         f"📄 {final_filename}\n"
         f"📂 Категория: {category}\n"
         f"📁 Путь: {relative_path}",
@@ -266,7 +345,9 @@ async def session_skip_filename(callback: types.CallbackQuery, state: FSMContext
         original_filename=data.get("original_name"),
         stored_path=data.get("relative_path"),
         file_size=data.get("file_size"),
-        category=data.get("category", "other")
+        category=data.get("category", "other"),
+        session_group=data.get("session_group", "Сессия"),
+        subject=data.get("subject", "Без предмета"),
     )
     
     session.add(new_db_file)
@@ -275,6 +356,8 @@ async def session_skip_filename(callback: types.CallbackQuery, state: FSMContext
     
     await callback.message.edit_text(
         f"✅ <b>Файл добавлен!</b>\n\n"
+        f"🗂 {data.get('session_group')}\n"
+        f"📘 {data.get('subject')}\n"
         f"📄 {data.get('original_name')}\n"
         f"📂 Категория: {data.get('category')}\n"
         f"📁 Путь: {data.get('relative_path')}",
@@ -360,7 +443,7 @@ async def show_session_files_for_delete(callback: types.CallbackQuery, session: 
     for f in files:
         # Показываем категорию в кнопке
         cat = f.category or "other"
-        btn_text = f"🗑️ {f.original_filename} [{cat}]"
+        btn_text = f"🗑️ {f.original_filename} [{f.session_group or 'Сессия'} / {f.subject or 'Без предмета'} / {cat}]"
         keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"sess_admin_del{f.id}")])
     
     keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")])
@@ -395,6 +478,8 @@ async def confirm_delete_session_file(callback: types.CallbackQuery, session: As
     await callback.message.edit_text(
         f"⚠️ <b>Удалить файл?</b>\n\n"
         f"📄 {file_to_delete.original_filename}\n"
+        f"🗂 Сессия: {file_to_delete.session_group or '-'}\n"
+        f"📘 Предмет: {file_to_delete.subject or '-'}\n"
         f"📂 Категория: {file_to_delete.category or 'other'}\n"
         f"📁 Путь: {file_to_delete.stored_path}\n\n"
         "Файл будет удален из БД и с диска.",
@@ -426,7 +511,7 @@ async def execute_delete_session_file(callback: types.CallbackQuery, session: As
     await callback.answer(f"✅ {file_to_delete.original_filename} удалён", show_alert=False)
     await show_session_files_for_delete(callback, session)
     await callback.message.answer(
-        "👨‍🏫 <b>Панель старосты:</b>",
+        "👩‍🏫 <b>Панель старосты:</b>",
         reply_markup=Keyboards.get_admin_main_keyboard(),
         parse_mode="HTML"
     )

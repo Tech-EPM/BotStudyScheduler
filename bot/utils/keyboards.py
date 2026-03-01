@@ -29,9 +29,10 @@ class Keyboards:
     @staticmethod
     def get_admin_menu() -> ReplyKeyboardMarkup:
         keyboard = [
-            [KeyboardButton(text="👨‍🏫 Админ-панель"), KeyboardButton(text="📅 Расписание")],
+            [KeyboardButton(text="👩‍🏫 Админ-панель"), KeyboardButton(text="📅 Расписание")],
             [
                 KeyboardButton(text="📚 Учебные материалы"),
+                KeyboardButton(text="📝 Задания к семинарам"),
                 KeyboardButton(text="🎓 Файлы сессий"),
                 KeyboardButton(text="✨ События"),
             ],
@@ -45,6 +46,7 @@ class Keyboards:
             [KeyboardButton(text="📅 Расписание")],
             [
                 KeyboardButton(text="📚 Учебные материалы"),
+                KeyboardButton(text="📝 Задания к семинарам"),
                 KeyboardButton(text="🎓 Файлы сессий"),
                 KeyboardButton(text="✨ События"),  # ✅ NEW
             ],
@@ -59,9 +61,10 @@ class Keyboards:
     @staticmethod
     def get_admin_main_keyboard() -> InlineKeyboardMarkup:
         keyboard = [
-            [InlineKeyboardButton(text="⏰ Редактировать расписание", callback_data="admin_edit_schedule")],
+            [InlineKeyboardButton(text="📅 Редактировать расписание", callback_data="admin_edit_schedule")],
             [InlineKeyboardButton(text="📚 Редактировать учебные материалы", callback_data="admin_edit_common_files")],
-            [InlineKeyboardButton(text="📝 Редактировать материалы для сессии", callback_data="admin_edit_session_files")],
+            [InlineKeyboardButton(text="📝 Редактировать задания к семинарам", callback_data="admin_edit_seminar_tasks")],
+            [InlineKeyboardButton(text="🎓 Редактировать материалы для сессии", callback_data="admin_edit_session_files")],
             [InlineKeyboardButton(text="⏳ Редактировать напоминания", callback_data="admin_edit_reminders")],
             [InlineKeyboardButton(text="✨ Редактировать события", callback_data="admin_edit_events")],
         ]
@@ -72,6 +75,7 @@ class Keyboards:
         keyboard = [
             [InlineKeyboardButton(text="➕ Добавить пару", callback_data="admin_add_select_week")],
             [InlineKeyboardButton(text="➖ Удалить пару", callback_data="admin_del_select_week")],
+            [InlineKeyboardButton(text="🗓️ Управление неделями", callback_data="admin_manage_weeks")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")],
         ]
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -122,14 +126,19 @@ class Keyboards:
 
     @staticmethod
     def get_admin_weeks_keyboard(
-        weeks: list[str],
+        weeks: list[str] | list[tuple[str, str]] | list[tuple[int, str]],
         action: str = "view",
         from_menu: str = "main",
         include_add_button: bool = False
     ) -> InlineKeyboardMarkup:
         keyboard = []
-        for week_id in weeks:
-            week_name = f"{week_id} неделя"
+        for week_item in weeks:
+            if isinstance(week_item, tuple):
+                week_id = str(week_item[0])
+                week_name = week_item[1]
+            else:
+                week_id = str(week_item)
+                week_name = f"{week_id} неделя"
             if action == "add":
                 cb_data = f"admin_add_week_{week_id}|{from_menu}"
             elif action == "del":
@@ -149,7 +158,9 @@ class Keyboards:
     def get_admin_days_keyboard(
         action: str = "view",
         from_menu: str = "main",
-        week_type: str = "1"
+        week_type: str = "1",
+        full_schedule_callback: str | None = None,
+        include_week_select: bool = True,
     ) -> InlineKeyboardMarkup:
         keyboard = []
         for day_id in SCHEDULE_DAYS:
@@ -164,8 +175,12 @@ class Keyboards:
                 cb_data = f"day_{day_id}|{from_menu}|{week_type}"
             
             keyboard.append([InlineKeyboardButton(text=day_name, callback_data=cb_data)])
+
+        if full_schedule_callback:
+            keyboard.append([InlineKeyboardButton(text="📋 Полное расписание", callback_data=full_schedule_callback)])
         
-        keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"admin_back_to_weeks_{from_menu}")])
+        if include_week_select:
+            keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"admin_back_to_weeks_{from_menu}")])
         keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="goto_back")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -194,7 +209,9 @@ class Keyboards:
     def get_student_days_keyboard(
         action: str = "view",
         from_menu: str = "main",
-        week_type: str = "1"
+        week_type: str = "1",
+        full_schedule_callback: str | None = None,
+        include_week_select: bool = True,
     ) -> InlineKeyboardMarkup:
         keyboard = []
         for day_id in SCHEDULE_DAYS:
@@ -209,7 +226,11 @@ class Keyboards:
                 cb_data = f"day_{day_id}|{from_menu}|{week_type}"
             
             keyboard.append([InlineKeyboardButton(text=day_name, callback_data=cb_data)])
-        keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"back_to_weeks_{from_menu}")])
+
+        if full_schedule_callback:
+            keyboard.append([InlineKeyboardButton(text="📋 Полное расписание", callback_data=full_schedule_callback)])
+        if include_week_select:
+            keyboard.append([InlineKeyboardButton(text="📆 Выбрать неделю", callback_data=f"back_to_weeks_{from_menu}")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     # ==========================================
@@ -221,11 +242,11 @@ class Keyboards:
         """Клавиатура с категориями для ОБЩИХ файлов (База знаний)"""
         keyboard = [
             [
-                InlineKeyboardButton(text="📐 Математика", callback_data="category_math"),
-                InlineKeyboardButton(text="💻 Программирование", callback_data="category_programming"),
+                InlineKeyboardButton(text="📘 Лекции", callback_data="category_lectures"),
+                InlineKeyboardButton(text="🧪 Практика", callback_data="category_practice"),
             ],
             [
-                InlineKeyboardButton(text="⚛️ Физика", callback_data="category_physics"),
+                InlineKeyboardButton(text="🛠 Лабораторные", callback_data="category_labs"),
                 InlineKeyboardButton(text="📦 Другое", callback_data="category_other"),
             ],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_upload")],
@@ -302,6 +323,9 @@ class Keyboards:
         keyboard = [
             [
                 InlineKeyboardButton(text="📚 Учебные материалы", callback_data="view_common_files"),
+                InlineKeyboardButton(text="📝 Задания к семинарам", callback_data="view_seminar_tasks"),
+            ],
+            [
                 InlineKeyboardButton(text="🎓 Файлы сессий", callback_data="view_session_files"),
             ],
             [InlineKeyboardButton(text="📅 Расписание", callback_data="view_schedule")],

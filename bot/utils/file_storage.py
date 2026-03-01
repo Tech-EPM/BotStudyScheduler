@@ -1,5 +1,6 @@
 import logging
 import uuid
+import re
 from pathlib import Path
 import aiofiles  
 
@@ -37,6 +38,12 @@ def get_file_extension(filename: str) -> str:
     if not filename or '.' not in filename:
         return ''
     return filename.rsplit('.', 1)[1].lower()
+
+
+def sanitize_path_component(value: str) -> str:
+    safe = re.sub(r"[\\/:*?\"<>|]+", "_", (value or "").strip())
+    safe = re.sub(r"\s+", " ", safe)
+    return safe or "default"
 
 
 async def save_file(file_bytes: bytes, original_filename: str, category: str) -> str:

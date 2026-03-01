@@ -49,6 +49,9 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_schedule_week_type_column)
+        await conn.run_sync(_ensure_file_documents_subject_column)
+        await conn.run_sync(_ensure_session_files_extra_columns)
+        await conn.run_sync(_ensure_schedule_week_id_column)
 
 
 def _ensure_schedule_week_type_column(sync_conn):
@@ -64,6 +67,43 @@ def _ensure_schedule_week_type_column(sync_conn):
     sync_conn.execute(
         text("ALTER TABLE schedule ADD COLUMN week_type VARCHAR NOT NULL DEFAULT '1'")
     )
+
+
+def _ensure_file_documents_subject_column(sync_conn):
+    inspector = inspect(sync_conn)
+    if "file_documents" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("file_documents")}
+    if "subject" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE file_documents ADD COLUMN subject VARCHAR(120)")
+        )
+
+
+def _ensure_session_files_extra_columns(sync_conn):
+    inspector = inspect(sync_conn)
+    if "session_files" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("session_files")}
+    if "session_group" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE session_files ADD COLUMN session_group VARCHAR(120)")
+        )
+    if "subject" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE session_files ADD COLUMN subject VARCHAR(120)")
+        )
+
+
+def _ensure_schedule_week_id_column(sync_conn):
+    inspector = inspect(sync_conn)
+    if "schedule" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("schedule")}
+    if "week_id" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE schedule ADD COLUMN week_id INTEGER")
+        )
 
 def get_session():
     """Генератор сессий (если понадобится для зависимостей)"""

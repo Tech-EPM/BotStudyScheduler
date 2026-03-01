@@ -1,6 +1,6 @@
 # bot/db/models.py
 import uuid
-from sqlalchemy import Column, Integer, String, DateTime, func, ForeignKey, BigInteger, event
+from sqlalchemy import Column, Integer, String, DateTime, Date, Text, func, ForeignKey, BigInteger, event
 from sqlalchemy.orm import relationship, declarative_base
 from bot.db.database import Base
 from bot.utils.file_storage import delete_file
@@ -66,6 +66,8 @@ class SessionFile(Base):
     file_size = Column(BigInteger, default=0)
     mime_type = Column(String(100), nullable=True)
     category = Column(String(50), nullable=True, index=True)
+    session_group = Column(String(120), nullable=True, index=True)
+    subject = Column(String(120), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("Session", back_populates="files")
@@ -85,6 +87,7 @@ class FileDocument(Base):
     file_path = Column(String, nullable=False)
     file_extension = Column(String, nullable=False)
     category = Column(String, nullable=False, index=True)
+    subject = Column(String(120), nullable=True, index=True)
     uploaded_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     uploaded_at = Column(DateTime, default=func.now())
     file_size = Column(Integer, nullable=False)
@@ -101,6 +104,7 @@ class FileDocument(Base):
 class Schedule(Base):
     __tablename__ = 'schedule'
     id = Column(Integer, primary_key=True, autoincrement=True)
+    week_id = Column(Integer, ForeignKey("schedule_weeks.id"), nullable=True, index=True)
     week_type = Column(String, nullable=False, default="1")
     day_of_week = Column(String, nullable=False)
     lesson_number = Column(Integer, nullable=False)
@@ -109,6 +113,23 @@ class Schedule(Base):
     time_end = Column(String, nullable=False)
     classroom = Column(String, nullable=True)
     teacher = Column(String, nullable=True)
+    week = relationship("ScheduleWeek", back_populates="lessons")
+
+
+class ScheduleWeek(Base):
+    __tablename__ = "schedule_weeks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(120), nullable=False)
+    start_date = Column(Date, nullable=False, index=True)
+    end_date = Column(Date, nullable=False, index=True)
+    is_active = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+    lessons = relationship("Schedule", back_populates="week")
+
+    def __repr__(self):
+        return f"<ScheduleWeek(id={self.id}, title={self.title})>"
 
 
 class Dispatchers(Base):
@@ -164,3 +185,29 @@ class Reminder(Base):
 
     def __repr__(self):
         return f"<Reminder(id={self.id}, target={self.target_user_id}, time={self.send_at})>"
+
+
+class SeminarTask(Base):
+    __tablename__ = "seminar_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    subject = Column(String(120), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    file_name = Column(String(255), nullable=True)
+    file_path = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<SeminarTask(id={self.id}, subject={self.subject}, title={self.title})>"
+
+
+@event.listens_for(SeminarTask, "before_delete")
+def receive_before_delete_task_file(mapper, connection, target):
+    if not target.file_path:
+        return
+    try:
+        delete_file(target.file_path)
+    except Exception as e:
+        print(f"Error deleting seminar task file {target.file_path}: {e}")

@@ -2,7 +2,7 @@ from aiogram import Router, F, types
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 import logging
 
 from bot.db.models import FileDocument
@@ -22,12 +22,15 @@ router_files_student = Router()
 @router_files_student.message(Command('view_file'))
 async def open_files_from_menu(message: types.Message, session: AsyncSession):
     """Студент нажал кнопку '📚 Учебные материалы' в главном меню"""
-    
-    stmt = select(FileDocument.category).distinct()
-    result = await session.execute(stmt)
-    categories = [cat for cat in result.scalars().all() if cat]
-    
-    if not categories:
+
+    subject_rows = await session.execute(
+        select(func.min(FileDocument.id), func.coalesce(FileDocument.subject, "Без предмета"))
+        .group_by(func.coalesce(FileDocument.subject, "Без предмета"))
+        .order_by(func.coalesce(FileDocument.subject, "Без предмета"))
+    )
+    subjects = [(file_id, subject) for file_id, subject in subject_rows.all() if subject]
+
+    if not subjects:
         await message.answer(
             "📭 <b>Пока нет файлов</b>\n\n"
             "Файлы появятся здесь, когда администратор их добавит.",
@@ -36,12 +39,15 @@ async def open_files_from_menu(message: types.Message, session: AsyncSession):
         )
         return
     
-   
+    keyboard = [
+        [InlineKeyboardButton(text=f"📘 {subject}", callback_data=f"files_subject_{file_id}")]
+        for file_id, subject in subjects
+    ]
+
     await message.answer(
-        "📚 <b>Учебные материалы</b> (База знаний)\n\n"
-        "📂 <b>Доступные категории:</b>\n\n" +
-        "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories))),
-        reply_markup=Keyboards.get_categories_keyboard(sorted(set(categories)), prefix="files_in_"),
+        "📚 <b>Учебные материалы</b>\n\n"
+        "Выберите предмет:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
@@ -53,38 +59,134 @@ async def open_files_from_menu(message: types.Message, session: AsyncSession):
 @router_files_student.callback_query(F.data == "view_common_files") 
 async def show_common_categories(callback: types.CallbackQuery, session: AsyncSession):
     """Показывает категории обычных файлов через inline-кнопку"""
-    
-    stmt = select(FileDocument.category).distinct()
-    result = await session.execute(stmt)
-    categories = [cat for cat in result.scalars().all() if cat]
-    
-    if not categories:
+
+    subject_rows = await session.execute(
+        select(func.min(FileDocument.id), func.coalesce(FileDocument.subject, "Без предмета"))
+        .group_by(func.coalesce(FileDocument.subject, "Без предмета"))
+        .order_by(func.coalesce(FileDocument.subject, "Без предмета"))
+    )
+    subjects = [(file_id, subject) for file_id, subject in subject_rows.all() if subject]
+
+    if not subjects:
         await callback.answer("📭 Пока нет файлов", show_alert=True)
         return
-    
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"📘 {subject}", callback_data=f"files_subject_{file_id}")]
+        for file_id, subject in subjects
+    ]
+
     await callback.message.edit_text(
-        "📚 <b>Учебные материалы</b> (База знаний)\n\n"
-        "📂 <b>Доступные категории:</b>\n\n" +
-        "\n".join(f"• <code>{cat}</code>" for cat in sorted(set(categories))),
-        reply_markup=Keyboards.get_categories_keyboard(sorted(set(categories)), prefix="files_in_"),
+        "📚 <b>Учебные материалы</b>\n\n"
+        "Выберите предмет:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
     await callback.answer()
 
 
 # ==========================================
-# 3. ФАЙЛЫ В КАТЕГОРИИ
+# 3. КАТЕГОРИИ В ПРЕДМЕТЕ
 # ==========================================
+@router_files_student.callback_query(F.data.startswith("files_subject_"))
+async def show_subject_categories(callback: types.CallbackQuery, session: AsyncSession):
+    file_id = int(callback.data.replace("files_subject_", ""))
+    doc = await session.get(FileDocument, file_id)
+    if not doc:
+        await callback.answer("❌ Предмет не найден", show_alert=True)
+        return
+
+    subject_name = doc.subject or "Без предмета"
+    subject_filter = FileDocument.subject.is_(None) if doc.subject is None else (FileDocument.subject == doc.subject)
+
+    category_rows = await session.execute(
+        select(func.min(FileDocument.id), FileDocument.category)
+        .where(subject_filter)
+        .group_by(FileDocument.category)
+        .order_by(FileDocument.category)
+    )
+    categories = [(rep_id, cat) for rep_id, cat in category_rows.all() if cat]
+    if not categories:
+        await callback.answer("📭 В этом предмете пока нет файлов", show_alert=True)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"files_cat_{rep_id}")]
+        for rep_id, cat in categories
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 К предметам", callback_data="view_common_files")])
+
+    await callback.message.edit_text(
+        f"📘 <b>Предмет:</b> {subject_name}\n\nВыберите категорию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# ==========================================
+# 4. ФАЙЛЫ В КАТЕГОРИИ
+# ==========================================
+
+@router_files_student.callback_query(F.data.startswith("files_cat_"))
+async def show_files_by_category_id(callback: types.CallbackQuery, session: AsyncSession):
+    rep_id = int(callback.data.replace("files_cat_", ""))
+    rep = await session.get(FileDocument, rep_id)
+    if not rep:
+        await callback.answer("❌ Категория не найдена", show_alert=True)
+        return
+
+    stmt = select(FileDocument).where(
+        (FileDocument.subject.is_(None) if rep.subject is None else (FileDocument.subject == rep.subject)),
+        FileDocument.category == rep.category,
+    ).order_by(desc(FileDocument.uploaded_at)).limit(20)
+
+    result = await session.execute(stmt)
+    files = result.scalars().all()
+    if not files:
+        await callback.answer("📭 В этой категории пока пусто", show_alert=True)
+        return
+
+    file_list = "\n".join([
+        f"📄 <b>{f.file_name}</b>\n"
+        f"   <i>💾 {f.file_size / 1024:.1f} КБ • {f.uploaded_at.strftime('%d.%m.%Y') if f.uploaded_at else 'N/A'}</i>"
+        for f in files[:10]
+    ])
+
+    keyboard = []
+    for f in files[:10]:
+        short_name = f.file_name[:25] + "..." if len(f.file_name) > 25 else f.file_name
+        keyboard.append([InlineKeyboardButton(text=f"📥 {short_name}", callback_data=f"download_file_{f.id}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 К предметам", callback_data="view_common_files")])
+
+    await callback.message.edit_text(
+        f"📘 <b>{rep.subject or 'Без предмета'}</b>\n📂 <b>{rep.category}</b>\n\n{file_list}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
 
 @router_files_student.callback_query(F.data.startswith("files_in_"))
 async def show_files_in_category(callback: types.CallbackQuery, session: AsyncSession):
     """Показывает файлы из FileDocument в выбранной категории"""
-    
-    category = callback.data.replace("files_in_", "")
-    
-    stmt = select(FileDocument).where(
-        FileDocument.category == category
-    ).order_by(desc(FileDocument.uploaded_at)).limit(20)
+
+    payload = callback.data.replace("files_in_", "")
+    if "|" in payload:
+        subject, category = payload.split("|", 1)
+        stmt = select(FileDocument).where(
+            FileDocument.subject == subject,
+            FileDocument.category == category,
+        ).order_by(desc(FileDocument.uploaded_at)).limit(20)
+        back_cb = "view_common_files"
+        header = f"📘 <b>{subject}</b>\n📂 <b>Категория:</b> <code>{category}</code>"
+    else:
+        category = payload
+        stmt = select(FileDocument).where(
+            FileDocument.category == category
+        ).order_by(desc(FileDocument.uploaded_at)).limit(20)
+        back_cb = "view_common_files"
+        header = f"📂 <b>Категория:</b> <code>{category}</code>"
     
     result = await session.execute(stmt)
     files = result.scalars().all()
@@ -112,10 +214,10 @@ async def show_files_in_category(callback: types.CallbackQuery, session: AsyncSe
         ])
     
 
-    keyboard.append([InlineKeyboardButton(text="🔙 К категориям", callback_data="view_common_files")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data=back_cb)])
     
     await callback.message.edit_text(
-        f"📂 <b>Категория:</b> <code>{category}</code>\n\n{file_list}",
+        f"{header}\n\n{file_list}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
