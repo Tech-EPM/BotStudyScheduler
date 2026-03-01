@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import select
@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 class ReminderService:
     def __init__(self, bot):
         self.bot = bot
-        self.scheduler = AsyncIOScheduler(event_loop=asyncio.get_running_loop())
+        self.scheduler = AsyncIOScheduler(
+            event_loop=asyncio.get_running_loop())
 
     async def start(self):
         """Запуск планировщика и загрузка задач из БД"""
@@ -36,7 +37,7 @@ class ReminderService:
                 count += 1
             else:
                 await self._mark_as_sent(reminder.id)
-        
+
         logger.info(f"📥 Loaded {count} pending reminders from database")
 
     def _schedule_job(self, reminder: Reminder):
@@ -49,13 +50,14 @@ class ReminderService:
             replace_existing=True,
             misfire_grace_time=60  # Допуск 60 секунд, если бот был перезагружен
         )
-        logger.debug(f"📅 Scheduled reminder {reminder.id} for {reminder.send_at}")
+        logger.debug(
+            f"📅 Scheduled reminder {reminder.id} for {reminder.send_at}")
 
     async def _send_reminder(self, reminder_id: str, user_id: int, text: str):
         """Функция отправки (вызывается планировщиком)"""
         try:
             await self.bot.send_message(
-                chat_id=user_id, 
+                chat_id=user_id,
                 text=f"🔔 <b>Напоминание</b>:\n\n{text}",
                 parse_mode="HTML"
             )
@@ -79,13 +81,15 @@ class ReminderService:
 
     async def create_reminder(self, target_user_id: int, text: str, send_at: datetime, created_by_id: int = None):
         """Создает напоминание в БД и планирует его"""
+        send_at = send_at - timedelta(hours=3)
+
         reminder = Reminder(
             target_user_id=target_user_id,
             text=text,
             send_at=send_at,
             created_by=created_by_id
         )
-        
+
         async with async_session_maker() as session:
             session.add(reminder)
             await session.commit()
@@ -109,7 +113,6 @@ reminder_service: ReminderService | None = None
 reminder_service: ReminderService | None = None
 
 
-
 async def init_reminder_service(bot):
     """Инициализация сервиса — вызывается при старте бота"""
     global reminder_service
@@ -127,6 +130,7 @@ async def shutdown_reminder_service():
         await reminder_service.stop()
         reminder_service = None
         logger.info("🛑 ReminderService stopped")
+
 
 def get_reminder_service() -> ReminderService:
     """Фабричная функция для получения сервиса в хэндлерах"""

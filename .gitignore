@@ -5,6 +5,8 @@ __pycache__/
 *.so
 .Python
 
+.vscode
+
 # === Виртуальное окружение ===
 venv/
 env/
@@ -20,7 +22,6 @@ db.sqlite3
 # === Секреты и конфиги (ТОЧНО СКРЫТЬ!) ===
 .env
 .env.local
-config.py
 secrets.json
 storage/
 

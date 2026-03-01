@@ -44,7 +44,7 @@ class EventCreation(StatesGroup):
 
 
 class ReminderState(StatesGroup):
-    waiting_for_user_id = State()
+    waiting_for_username = State()
     waiting_for_date = State()      
     waiting_for_time = State()
     waiting_for_text = State()

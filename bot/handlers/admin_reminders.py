@@ -98,34 +98,53 @@ async def start_add_reminder(callback: types.CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         "🔔 Создание напоминания\n\n"
-        "Введите ID пользователя (Telegram ID),\n"
+        "Введите username пользователя,\n"
         "которому нужно отправить сообщение:\n\n"
-        "💡 ID можно получить в боте @userinfobot ")
-    await state.set_state(ReminderState.waiting_for_user_id)
+        "Пример: `@ivanov` или `ivanov`"
+    )
+    await state.set_state(ReminderState.waiting_for_username)
     await callback.answer()
 
 
-@router_reminder_admin.message(ReminderState.waiting_for_user_id)
-async def process_user_id(message: types.Message, state: FSMContext):
-    """Обработка ввода ID пользователя"""
-    if not message.text.isdigit():
+@router_reminder_admin.message(ReminderState.waiting_for_username)
+async def process_username(message: types.Message, state: FSMContext):
+    """Обработка ввода username и поиск Telegram ID в БД"""
+    username_input = (message.text or "").strip()
+    if not username_input:
         await message.answer(
-            "❌ **Ошибка:** ID должен быть числом.\n\n"
-            "Пожалуйста, введите корректный Telegram ID:"
+            "❌ **Ошибка:** username не может быть пустым.\n\n"
+            "Пожалуйста, введите username пользователя:"
         )
         return
 
-    target_id = int(message.text)
-    if target_id <= 0:
-        await message.answer("❌ **Ошибка:** ID должен быть положительным числом.")
+    normalized_username = username_input.lstrip("@").strip()
+    if not normalized_username:
+        await message.answer("❌ **Ошибка:** некорректный username. Пример: `@ivanov`")
         return
 
-    await state.update_data(target_user_id=target_id)
+    async with get_session() as session:
+        result = await session.execute(
+            select(User).where(func.lower(User.username) == normalized_username.lower())
+        )
+        target_user = result.scalar_one_or_none()
+
+    if not target_user:
+        await message.answer(
+            "❌ Пользователь не зарегистрирован в боте.\n\n"
+            "Проверьте username и попробуйте снова."
+        )
+        return
+
+    await state.update_data(
+        target_user_id=target_user.user_id,
+        target_username=target_user.username or normalized_username,
+    )
     await state.set_state(ReminderState.waiting_for_date)
     
     today = datetime.now().strftime("%d.%m.%Y")
     await message.answer(
-        f"✅ ID принят: `{target_id}`\n\n"
+        f"✅ Пользователь найден: `@{target_user.username or normalized_username}`\n"
+        f"🆔 Telegram ID: `{target_user.user_id}`\n\n"
         "📅 **Введите дату отправки** в одном из форматов:\n"
         "• `ДД.ММ.ГГГГ` (например: `15.12.2024`)\n"
         "• `ДД.ММ` (например: `15.12` — текущий год)\n"
@@ -211,6 +230,7 @@ async def process_text(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     target_id = data['target_user_id']
+    target_username = data.get('target_username')
     send_datetime = data['send_time']
     text = message.text.strip()
 
@@ -240,7 +260,8 @@ async def process_text(message: types.Message, state: FSMContext):
         
         await message.answer(
             "✅ **Напоминание успешно создано!**\n\n"
-            f"👤 Получатель: `{target_id}`\n"
+            f"👤 Получатель: `@{target_username}`\n"
+            f"🆔 Telegram ID: `{target_id}`\n"
             f"⏰ Дата и время: `{send_datetime.strftime('%d.%m.%Y %H:%M')}`\n"
             f"📄 Текст: {text[:100]}{'...' if len(text) > 100 else ''}\n\n"
             f"🆔 ID напоминания: `{reminder.id}`"
