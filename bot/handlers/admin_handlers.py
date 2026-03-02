@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 
 from aiogram import Router, F
 from aiogram.filters import Command, StateFilter
@@ -30,6 +31,30 @@ def _parse_date(value: str) -> dt.date | None:
         except ValueError:
             continue
     return None
+
+
+def _parse_time_range(value: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"\s*(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})\s*", value or "")
+    if not match:
+        return None
+    start_raw, end_raw = match.groups()
+    try:
+        start_time = dt.datetime.strptime(start_raw, "%H:%M").time()
+        end_time = dt.datetime.strptime(end_raw, "%H:%M").time()
+    except ValueError:
+        return None
+    if start_time >= end_time:
+        return None
+    return start_time.strftime("%H:%M"), end_time.strftime("%H:%M")
+
+
+def _lesson_created_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Дублировать пару", callback_data=f"admin_duplicate_lesson_{lesson_id}")],
+            [InlineKeyboardButton(text="🔙 В расписание", callback_data="admin_edit_schedule")],
+        ]
+    )
 
 
 async def _get_weeks() -> list[ScheduleWeek]:
@@ -510,20 +535,57 @@ async def add_lesson_number(message: Message, state: FSMContext):
 @router_admin.message(StateFilter(ScheduleAdd.subject))
 async def add_lesson_subject(message: Message, state: FSMContext):
     await state.update_data(subject=message.text)
-    await message.answer("⏰ Введите время начала (09:00):")
+    await message.answer(
+        "⏰ Введите время пары одним сообщением через тире.\n"
+        "Пример: <code>09:00-10:30</code>",
+        parse_mode="HTML",
+    )
     await state.set_state(ScheduleAdd.time_start)
 
 
 @router_admin.message(StateFilter(ScheduleAdd.time_start))
 async def add_lesson_time_start(message: Message, state: FSMContext):
-    await state.update_data(time_start=message.text)
-    await message.answer("⏰ Введите время окончания (10:30):")
-    await state.set_state(ScheduleAdd.time_end)
+    parsed = _parse_time_range(message.text or "")
+    if not parsed:
+        await message.answer(
+            "❌ Неверный формат времени.\n"
+            "Отправьте в формате <code>HH:MM-HH:MM</code>, например <code>09:00-10:30</code>.",
+            parse_mode="HTML",
+        )
+        return
 
+    time_start, time_end = parsed
+    data = await state.get_data()
+    duplicate_template = data.get("duplicate_template")
 
-@router_admin.message(StateFilter(ScheduleAdd.time_end))
-async def add_lesson_time_end(message: Message, state: FSMContext):
-    await state.update_data(time_end=message.text)
+    if duplicate_template:
+        async with async_session_maker() as session:
+            new_lesson = Schedule(
+                week_id=duplicate_template["week_id"],
+                week_type=str(duplicate_template["week_id"]),
+                day_of_week=duplicate_template["day_of_week"],
+                lesson_number=duplicate_template["lesson_number"],
+                subject=duplicate_template["subject"],
+                time_start=time_start,
+                time_end=time_end,
+                classroom=duplicate_template.get("classroom"),
+                teacher=duplicate_template.get("teacher"),
+            )
+            session.add(new_lesson)
+            await session.commit()
+            await session.refresh(new_lesson)
+
+        await message.answer(
+            "✅ <b>Пара продублирована.</b>\n"
+            f"Номер пары: <b>{duplicate_template['lesson_number']}</b>\n"
+            f"Время: <b>{time_start}-{time_end}</b>",
+            parse_mode="HTML",
+            reply_markup=_lesson_created_keyboard(new_lesson.id),
+        )
+        await state.clear()
+        return
+
+    await state.update_data(time_start=time_start, time_end=time_end)
     await message.answer("🚪 Аудитория (или 'пропустить'):")
     await state.set_state(ScheduleAdd.classroom)
 
@@ -555,13 +617,47 @@ async def add_lesson_finish(message: Message, state: FSMContext):
         )
         session.add(new_lesson)
         await session.commit()
+        await session.refresh(new_lesson)
 
     await message.answer(
         "✅ <b>Пара добавлена!</b>",
         parse_mode="HTML",
-        reply_markup=Keyboards.get_admin_schedule_keyboard(),
+        reply_markup=_lesson_created_keyboard(new_lesson.id),
     )
     await state.clear()
+
+
+@router_admin.callback_query(F.data.startswith("admin_duplicate_lesson_"))
+async def duplicate_lesson_start(callback: CallbackQuery, state: FSMContext):
+    lesson_id = int(callback.data.replace("admin_duplicate_lesson_", ""))
+    async with async_session_maker() as session:
+        lesson = await session.get(Schedule, lesson_id)
+        if not lesson:
+            await callback.answer("Пара не найдена", show_alert=True)
+            return
+
+        duplicate_template = {
+            "week_id": lesson.week_id or 1,
+            "day_of_week": lesson.day_of_week,
+            "lesson_number": lesson.lesson_number + 1,
+            "subject": lesson.subject,
+            "classroom": lesson.classroom,
+            "teacher": lesson.teacher,
+        }
+
+    await state.clear()
+    await state.update_data(duplicate_template=duplicate_template)
+    await state.set_state(ScheduleAdd.time_start)
+
+    await callback.message.answer(
+        "🔁 Дублирование пары\n"
+        f"Предмет: <b>{duplicate_template['subject']}</b>\n"
+        f"Номер пары для дубликата: <b>{duplicate_template['lesson_number']}</b>\n\n"
+        "Введите время одним сообщением через тире.\n"
+        "Пример: <code>10:40-12:10</code>",
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
 
 @router_admin.callback_query(F.data.startswith("del_"))

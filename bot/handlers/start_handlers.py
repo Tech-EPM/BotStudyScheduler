@@ -18,25 +18,28 @@ from sqlalchemy import select
 router_start = Router()
 
 
-router_start.message.filter(lambda msg: msg.from_user.id) 
+router_start.message.filter(lambda msg: msg.from_user.id)
+
 
 @router_start.message(Command('start'))
 @router_start.message(F.text == "main_menu")
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     username = message.from_user.username
 
     initial_status = "admin" if user_id in Config.ADMIN_IDS else "student"
-    
+
     async with async_session_maker() as session:
         result = await session.execute(select(User).where(User.user_id == user_id))
         user = result.scalar_one_or_none()
-        
+
         if not user:
-            user = User(user_id=user_id, username=username, status=initial_status)
+            user = User(user_id=user_id, username=username,
+                        status=initial_status)
             session.add(user)
             await session.commit()
-            
+
             role_text = "старостой 🎓" if initial_status == "admin" else "студентом 📚"
             await message.answer(f"👋 Привет! Я записал тебя {role_text}.")
         else:
@@ -54,28 +57,26 @@ async def cmd_start(message: Message):
 
 @router_start.message(F.text == "🆘 Помощь")
 @router_start.message(Command('help'))
-async def cmd_help(message: Message):
+async def cmd_help(message: Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     username = message.from_user.username
 
     status = "admin" if user_id in Config.ADMIN_IDS else "student"
     if status == "admin":
         await message.answer(
-        "🆘 <b>Доступные команды:</b>\n\n"
-        "/start - Меню\n"
-        "/schedule - Расписание\n"
-        "/view_file - Просмотр файлов\n"
-        "/admin - Панель старосты",
-        parse_mode="HTML"
-    )
+            "🆘 <b>Доступные команды:</b>\n\n"
+            "/start - Меню\n"
+            "/schedule - Расписание\n"
+            "/view_file - Просмотр файлов\n"
+            "/admin - Панель старосты",
+            parse_mode="HTML"
+        )
     else:
         await message.answer(
-        "🆘 <b>Доступные команды:</b>\n\n"
-        "/start - Меню\n"
-        "/view_file - Просмотр файлов\n"
-        "/schedule - Расписание\n",
-        parse_mode="HTML"
-    )
-
-
-
+            "🆘 <b>Доступные команды:</b>\n\n"
+            "/start - Меню\n"
+            "/view_file - Просмотр файлов\n"
+            "/schedule - Расписание\n",
+            parse_mode="HTML"
+        )
