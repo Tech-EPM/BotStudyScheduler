@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import select
-from bot.db.models import Reminder
+from bot.db.models import Reminder, SeminarTask
 from bot.db.database import async_session_maker  # 👈 Используем ваш factory
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,13 @@ class ReminderService:
     async def start(self):
         """Запуск планировщика и загрузка задач из БД"""
         self.scheduler.start()
+        self.scheduler.add_job(
+            self._cleanup_expired_seminar_tasks,
+            trigger="interval",
+            hours=1,
+            id="cleanup_expired_seminar_tasks",
+            replace_existing=True,
+        )
         await self._load_pending_reminders()
         logger.info("Reminder service started")
 
@@ -98,6 +105,26 @@ class ReminderService:
         self._schedule_job(reminder)
         logger.info(f"✨ Created reminder {reminder.id}")
         return reminder
+
+    async def _cleanup_expired_seminar_tasks(self):
+        """Удаляет задания, у которых прошли сутки после дедлайна."""
+        cutoff = datetime.now().date() - timedelta(days=1)
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(SeminarTask).where(
+                    SeminarTask.due_date.is_not(None),
+                    SeminarTask.due_date < cutoff,
+                )
+            )
+            expired_tasks = result.scalars().all()
+
+            if not expired_tasks:
+                return
+
+            for task in expired_tasks:
+                await session.delete(task)
+            await session.commit()
+            logger.info(f"🧹 Deleted expired seminar tasks: {len(expired_tasks)}")
 
     async def stop(self):
         """Корректная остановка планировщика"""

@@ -194,6 +194,7 @@ class SeminarTask(Base):
     subject = Column(String(120), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
+    due_date = Column(Date, nullable=True, index=True)
     file_name = Column(String(255), nullable=True)
     file_path = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=func.now())
@@ -211,3 +212,44 @@ def receive_before_delete_task_file(mapper, connection, target):
         delete_file(target.file_path)
     except Exception as e:
         print(f"Error deleting seminar task file {target.file_path}: {e}")
+
+
+class DeanOfficeFolder(Base):
+    __tablename__ = "dean_office_folders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=func.now())
+
+    entries = relationship("DeanOfficeEntry", back_populates="folder", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<DeanOfficeFolder(id={self.id}, name={self.name})>"
+
+
+class DeanOfficeEntry(Base):
+    __tablename__ = "dean_office_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    folder_id = Column(Integer, ForeignKey("dean_office_folders.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    text = Column(Text, nullable=False)
+    file_name = Column(String(255), nullable=True)
+    file_path = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    folder = relationship("DeanOfficeFolder", back_populates="entries")
+
+    def __repr__(self):
+        return f"<DeanOfficeEntry(id={self.id}, folder_id={self.folder_id})>"
+
+
+@event.listens_for(DeanOfficeEntry, "before_delete")
+def receive_before_delete_dean_entry_file(mapper, connection, target):
+    if not target.file_path:
+        return
+    try:
+        delete_file(target.file_path)
+    except Exception as e:
+        print(f"Error deleting dean office file {target.file_path}: {e}")

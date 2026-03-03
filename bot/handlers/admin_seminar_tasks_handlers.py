@@ -4,6 +4,7 @@ from aiogram.filters import StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
+import datetime as dt
 
 from bot.db.models import SeminarTask
 from bot.utils.state import SeminarTaskState
@@ -18,6 +19,14 @@ from bot.utils.file_storage import (
 
 
 router_admin_seminars = Router()
+
+
+def _parse_due_date(value: str) -> dt.date | None:
+    value = (value or "").strip()
+    try:
+        return dt.datetime.strptime(value, "%d.%m.%Y").date()
+    except ValueError:
+        return None
 
 
 def _admin_seminar_menu() -> InlineKeyboardMarkup:
@@ -137,6 +146,26 @@ async def seminar_add_title(message: types.Message, state: FSMContext):
 async def seminar_add_description(message: types.Message, state: FSMContext):
     description = None if message.text.strip().lower() == "пропустить" else message.text.strip()
     await state.update_data(description=description)
+    await state.set_state(SeminarTaskState.waiting_for_due_date)
+    await message.answer(
+        "Введите дедлайн задания в формате <code>ДД.ММ.ГГГГ</code>\n"
+        "Например: <code>25.03.2026</code>\n\n"
+        "Или напишите <code>пропустить</code> без даты.",
+        parse_mode="HTML",
+    )
+
+
+@router_admin_seminars.message(StateFilter(SeminarTaskState.waiting_for_due_date), F.text)
+async def seminar_add_due_date(message: types.Message, state: FSMContext):
+    raw_value = (message.text or "").strip()
+    due_date = None
+    if raw_value.lower() != "пропустить":
+        due_date = _parse_due_date(raw_value)
+        if not due_date:
+            await message.answer("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ или 'пропустить'.")
+            return
+
+    await state.update_data(due_date=due_date.isoformat() if due_date else None)
     await state.set_state(SeminarTaskState.waiting_for_file)
     await message.answer(
         "Пришлите файл задания (опционально), либо нажмите 'Пропустить':",
@@ -193,6 +222,7 @@ async def seminar_add_file(message: types.Message, state: FSMContext, session: A
         subject=data["subject"],
         title=data["title"],
         description=data.get("description"),
+        due_date=dt.date.fromisoformat(data["due_date"]) if data.get("due_date") else None,
         file_name=original_name,
         file_path=relative_path,
     )
@@ -216,6 +246,7 @@ async def seminar_skip_file(callback: types.CallbackQuery, state: FSMContext, se
         subject=data["subject"],
         title=data["title"],
         description=data.get("description"),
+        due_date=dt.date.fromisoformat(data["due_date"]) if data.get("due_date") else None,
     )
     session.add(task)
     await session.commit()
@@ -287,6 +318,7 @@ async def seminar_show_task(callback: types.CallbackQuery, session: AsyncSession
     text = (
         f"📘 <b>{task.subject}</b>\n"
         f"📝 <b>{task.title}</b>\n\n"
+        f"📅 <b>Дедлайн:</b> {task.due_date.strftime('%d.%m.%Y') if task.due_date else 'не указан'}\n\n"
         f"{task.description or 'Описание отсутствует'}"
     )
     keyboard = [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_seminar_list")]]
@@ -422,6 +454,7 @@ async def seminar_edit_field_finish(message: types.Message, state: FSMContext, s
         SeminarTaskState.waiting_for_subject,
         SeminarTaskState.waiting_for_title,
         SeminarTaskState.waiting_for_description,
+        SeminarTaskState.waiting_for_due_date,
         SeminarTaskState.waiting_for_file,
         SeminarTaskState.waiting_for_edit_value,
     ),
@@ -432,6 +465,7 @@ async def seminar_edit_field_finish(message: types.Message, state: FSMContext, s
         SeminarTaskState.waiting_for_subject,
         SeminarTaskState.waiting_for_title,
         SeminarTaskState.waiting_for_description,
+        SeminarTaskState.waiting_for_due_date,
         SeminarTaskState.waiting_for_file,
         SeminarTaskState.waiting_for_edit_value,
     ),

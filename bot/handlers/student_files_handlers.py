@@ -5,13 +5,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 import logging
 
-from bot.db.models import FileDocument
+from bot.db.models import FileDocument, User
 from bot.utils.keyboards import Keyboards
 from bot.utils.file_storage import get_file_full_path
 
 
 logger = logging.getLogger(__name__)
 router_files_student = Router()
+
+
+async def _menu_for_user(session: AsyncSession, telegram_user_id: int):
+    result = await session.execute(select(User).where(User.user_id == telegram_user_id))
+    user = result.scalar_one_or_none()
+    if user and user.status == "admin":
+        return Keyboards.get_admin_menu()
+    if user and user.status == "teacher":
+        return Keyboards.get_teacher_menu()
+    return Keyboards.get_student_menu()
 
 
 # ==========================================
@@ -31,10 +41,11 @@ async def open_files_from_menu(message: types.Message, session: AsyncSession):
     subjects = [(file_id, subject) for file_id, subject in subject_rows.all() if subject]
 
     if not subjects:
+        menu = await _menu_for_user(session, message.from_user.id)
         await message.answer(
             "📭 <b>Пока нет файлов</b>\n\n"
             "Файлы появятся здесь, когда администратор их добавит.",
-            reply_markup=Keyboards.get_student_menu(),
+            reply_markup=menu,
             parse_mode="HTML"
         )
         return

@@ -61,5 +61,23 @@ class SeminarTaskState(StatesGroup):
     waiting_for_subject = State()
     waiting_for_title = State()
     waiting_for_description = State()
+    waiting_for_due_date = State()
     waiting_for_file = State()
     waiting_for_edit_value = State()
+
+
+class TeacherAdminState(StatesGroup):
+    waiting_for_username = State()
+
+
+class TeacherTaskState(StatesGroup):
+    waiting_for_message = State()
+
+
+class DeanOfficeState(StatesGroup):
+    waiting_for_folder_name = State()
+    waiting_for_entry_title = State()
+    waiting_for_entry_text = State()
+    waiting_for_entry_file = State()
+    waiting_for_folder_new_name = State()
+    waiting_for_entry_new_text = State()

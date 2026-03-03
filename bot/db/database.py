@@ -52,6 +52,8 @@ async def init_db():
         await conn.run_sync(_ensure_file_documents_subject_column)
         await conn.run_sync(_ensure_session_files_extra_columns)
         await conn.run_sync(_ensure_schedule_week_id_column)
+        await conn.run_sync(_ensure_seminar_due_date_column)
+        await conn.run_sync(_ensure_dean_office_entry_extra_columns)
 
 
 def _ensure_schedule_week_type_column(sync_conn):
@@ -103,6 +105,36 @@ def _ensure_schedule_week_id_column(sync_conn):
     if "week_id" not in columns:
         sync_conn.execute(
             text("ALTER TABLE schedule ADD COLUMN week_id INTEGER")
+        )
+
+
+def _ensure_seminar_due_date_column(sync_conn):
+    inspector = inspect(sync_conn)
+    if "seminar_tasks" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("seminar_tasks")}
+    if "due_date" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE seminar_tasks ADD COLUMN due_date DATE")
+        )
+
+
+def _ensure_dean_office_entry_extra_columns(sync_conn):
+    inspector = inspect(sync_conn)
+    if "dean_office_entries" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("dean_office_entries")}
+    if "title" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE dean_office_entries ADD COLUMN title VARCHAR(255) NOT NULL DEFAULT 'Без названия'")
+        )
+    if "file_name" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE dean_office_entries ADD COLUMN file_name VARCHAR(255)")
+        )
+    if "file_path" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE dean_office_entries ADD COLUMN file_path VARCHAR(500)")
         )
 
 def get_session():

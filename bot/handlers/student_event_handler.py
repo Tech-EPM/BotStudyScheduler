@@ -5,15 +5,20 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from bot.db.models import Event
+from bot.db.models import Event, User
 from bot.utils.keyboards import Keyboards
-from bot.config import Config
 
 logger = logging.getLogger(__name__)
 router_student_events = Router()
 
-def get_menu_for_user(user_id: int):
-    return Keyboards.get_admin_menu() if user_id in Config.ADMIN_IDS else Keyboards.get_student_menu()
+async def get_menu_for_user(session: AsyncSession, user_id: int):
+    result = await session.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if user and user.status == "admin":
+        return Keyboards.get_admin_menu()
+    if user and user.status == "teacher":
+        return Keyboards.get_teacher_menu()
+    return Keyboards.get_student_menu()
 
 
 # ==========================================
@@ -31,10 +36,11 @@ async def show_events_from_menu(message: types.Message, session: AsyncSession):
     events = result.scalars().all()
     
     if not events:
+        menu = await get_menu_for_user(session, message.from_user.id)
         await message.answer(
             "📭 <b>Пока нет запланированных событий</b>\n\n"
             "Заходите позже — мы обязательно что-нибудь придумаем! 😊",
-            reply_markup=get_menu_for_user(message.from_user.id),
+            reply_markup=menu,
             parse_mode="HTML"
         )
         return
@@ -66,11 +72,12 @@ async def show_events_from_menu(message: types.Message, session: AsyncSession):
         
         event_list.append(event_text)
     
+    menu = await get_menu_for_user(session, message.from_user.id)
     await message.answer(
         "📅 <b>Афиша ближайших событий</b>\n\n" +
         "\n".join(event_list) +
         f"\n<i>Всего событий: {len(events)}</i>",
-        reply_markup=get_menu_for_user(message.from_user.id),
+        reply_markup=menu,
         parse_mode="HTML"
     )
 

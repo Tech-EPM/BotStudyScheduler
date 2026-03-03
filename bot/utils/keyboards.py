@@ -29,14 +29,16 @@ class Keyboards:
     @staticmethod
     def get_admin_menu() -> ReplyKeyboardMarkup:
         keyboard = [
-            [KeyboardButton(text="👩‍🏫 Админ-панель"), KeyboardButton(text="📅 Расписание")],
+            [KeyboardButton(text="📅 Расписание"), KeyboardButton(text="✨ События")],
             [
                 KeyboardButton(text="📚 Учебные материалы"),
                 KeyboardButton(text="📝 Задания к семинарам"),
-                KeyboardButton(text="🎓 Файлы сессий"),
-                KeyboardButton(text="✨ События"),
             ],
-            [KeyboardButton(text="🆘 Помощь")],
+            [
+                KeyboardButton(text="🎓 Файлы сессий"),
+                KeyboardButton(text="🏛 Деканат"),
+            ],
+            [KeyboardButton(text="👩‍🏫 Админ-панель"), KeyboardButton(text="🆘 Помощь")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -47,9 +49,22 @@ class Keyboards:
             [
                 KeyboardButton(text="📚 Учебные материалы"),
                 KeyboardButton(text="📝 Задания к семинарам"),
-                KeyboardButton(text="🎓 Файлы сессий"),
-                KeyboardButton(text="✨ События"),  # ✅ NEW
             ],
+            [
+                KeyboardButton(text="🎓 Файлы сессий"),
+                KeyboardButton(text="✨ События"),
+            ],
+            [KeyboardButton(text="🏛 Деканат")],
+            [KeyboardButton(text="🆘 Помощь")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def get_teacher_menu() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton(text="📅 Расписание")],
+            [KeyboardButton(text="📝 Задания к семинарам"), KeyboardButton(text="✨ События")],
+            [KeyboardButton(text="📤 Отправить задание")],
             [KeyboardButton(text="🆘 Помощь")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -65,8 +80,33 @@ class Keyboards:
             [InlineKeyboardButton(text="📚 Редактировать учебные материалы", callback_data="admin_edit_common_files")],
             [InlineKeyboardButton(text="📝 Редактировать задания к семинарам", callback_data="admin_edit_seminar_tasks")],
             [InlineKeyboardButton(text="🎓 Редактировать материалы для сессии", callback_data="admin_edit_session_files")],
+            [InlineKeyboardButton(text="🏛 Редактировать деканат", callback_data="admin_edit_dean_office")],
+            [InlineKeyboardButton(text="👨‍🏫 Преподаватели", callback_data="admin_manage_teachers")],
             [InlineKeyboardButton(text="⏳ Редактировать напоминания", callback_data="admin_edit_reminders")],
             [InlineKeyboardButton(text="✨ Редактировать события", callback_data="admin_edit_events")],
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    @staticmethod
+    def get_admin_dean_office_keyboard() -> InlineKeyboardMarkup:
+        keyboard = [
+            [InlineKeyboardButton(text="➕ Создать папку", callback_data="dean_add_folder")],
+            [InlineKeyboardButton(text="📝 Добавить информацию", callback_data="dean_add_entry")],
+            [InlineKeyboardButton(text="✏️ Переименовать папку", callback_data="dean_rename_folder_menu")],
+            [InlineKeyboardButton(text="🗑 Удалить папку", callback_data="dean_delete_folder_menu")],
+            [InlineKeyboardButton(text="✏️ Редактировать запись", callback_data="dean_edit_entry_pick_folder")],
+            [InlineKeyboardButton(text="🗑 Удалить запись", callback_data="dean_delete_entry_pick_folder")],
+            [InlineKeyboardButton(text="📂 Просмотр папок", callback_data="dean_back")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")],
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    @staticmethod
+    def get_admin_teachers_keyboard() -> InlineKeyboardMarkup:
+        keyboard = [
+            [InlineKeyboardButton(text="➕ Добавить преподавателя", callback_data="admin_add_teacher")],
+            [InlineKeyboardButton(text="📋 Список преподавателей", callback_data="admin_list_teachers")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")],
         ]
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

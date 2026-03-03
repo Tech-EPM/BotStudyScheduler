@@ -7,13 +7,13 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 
 from bot.utils.filters import IsAdmin
 from bot.utils.keyboards import Keyboards, DAYS
-from bot.utils.state import ScheduleAdd
+from bot.utils.state import ScheduleAdd, TeacherAdminState
 from bot.db.database import async_session_maker
-from bot.db.models import Schedule, ScheduleWeek
+from bot.db.models import Schedule, ScheduleWeek, User
 
 
 router_admin = Router()
@@ -184,6 +184,89 @@ async def goto_admin_panel(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "👩‍🏫 <b>Панель старосты:</b>",
         reply_markup=Keyboards.get_admin_main_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data == "admin_manage_teachers")
+async def admin_manage_teachers(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "👨‍🏫 <b>Управление преподавателями</b>",
+        reply_markup=Keyboards.get_admin_teachers_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router_admin.callback_query(F.data == "admin_add_teacher")
+async def admin_add_teacher_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(TeacherAdminState.waiting_for_username)
+    await callback.message.edit_text(
+        "Введите username преподавателя (пример: <code>@ivanov</code>):\n\n"
+        "Пользователь должен быть уже зарегистрирован в боте.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router_admin.message(StateFilter(TeacherAdminState.waiting_for_username), F.text)
+async def admin_add_teacher_finish(message: Message, state: FSMContext):
+    username = (message.text or "").strip().lstrip("@")
+    if not username:
+        await message.answer("❌ Username пустой. Введите username вида @example.")
+        return
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(User).where(func.lower(User.username) == username.lower())
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer("❌ Пользователь с таким username не найден в БД.")
+            return
+
+        user.status = "teacher"
+        await session.commit()
+        teacher_telegram_id = user.user_id
+
+    await state.clear()
+    await message.answer(
+        f"✅ Пользователь @{username} получил статус преподавателя.",
+        reply_markup=Keyboards.get_admin_main_keyboard(),
+    )
+
+    try:
+        await message.bot.send_message(
+            teacher_telegram_id,
+            "✅ Вам назначен статус преподавателя.\n\nДоступно отдельное меню:",
+            reply_markup=Keyboards.get_teacher_menu(),
+        )
+    except Exception:
+        await message.answer("⚠️ Не удалось отправить уведомление преподавателю в Telegram.")
+
+
+@router_admin.callback_query(F.data == "admin_list_teachers")
+async def admin_list_teachers(callback: CallbackQuery):
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(User).where(User.status == "teacher").order_by(User.username)
+        )
+        teachers = result.scalars().all()
+
+    if not teachers:
+        await callback.answer("Преподаватели не добавлены", show_alert=True)
+        return
+
+    lines = []
+    for teacher in teachers:
+        username = f"@{teacher.username}" if teacher.username else "без username"
+        lines.append(f"• {username} (id: <code>{teacher.user_id}</code>)")
+
+    await callback.message.edit_text(
+        "👨‍🏫 <b>Список преподавателей:</b>\n\n" + "\n".join(lines),
+        reply_markup=Keyboards.get_admin_teachers_keyboard(),
         parse_mode="HTML",
     )
     await callback.answer()

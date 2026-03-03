@@ -14,6 +14,8 @@ from .student_event_handler import router_student_events
 from .admin_reminders import router_reminder_admin
 from .admin_seminar_tasks_handlers import router_admin_seminars
 from .student_seminar_tasks_handlers import router_student_seminars
+from .teacher_handlers import router_teacher
+from .dean_office_handlers import router_dean_office
 
 
 routes = [
@@ -28,7 +30,9 @@ routes = [
     router_student_seminars,
     router_admin_events,
     router_student_events,
-    router_reminder_admin
+    router_reminder_admin,
+    router_teacher,
+    router_dean_office,
 ]
 
 

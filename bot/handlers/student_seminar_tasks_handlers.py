@@ -3,12 +3,22 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
-from bot.db.models import SeminarTask
+from bot.db.models import SeminarTask, User
 from bot.utils.keyboards import Keyboards
 from bot.utils.file_storage import get_file_full_path
 
 
 router_student_seminars = Router()
+
+
+async def _menu_for_user(session: AsyncSession, telegram_user_id: int):
+    result = await session.execute(select(User).where(User.user_id == telegram_user_id))
+    user = result.scalar_one_or_none()
+    if user and user.status == "admin":
+        return Keyboards.get_admin_menu()
+    if user and user.status == "teacher":
+        return Keyboards.get_teacher_menu()
+    return Keyboards.get_student_menu()
 
 
 async def _show_subjects(target: types.Message | types.CallbackQuery, session: AsyncSession):
@@ -24,7 +34,8 @@ async def _show_subjects(target: types.Message | types.CallbackQuery, session: A
         if isinstance(target, types.CallbackQuery):
             await target.answer(text, show_alert=True)
         else:
-            await target.answer(text, reply_markup=Keyboards.get_student_menu())
+            menu = await _menu_for_user(session, target.from_user.id)
+            await target.answer(text, reply_markup=menu)
         return
 
     keyboard = [
@@ -94,13 +105,19 @@ async def show_seminar_task(callback: types.CallbackQuery, session: AsyncSession
     text = (
         f"📘 <b>{task.subject}</b>\n"
         f"📝 <b>{task.title}</b>\n\n"
+        f"📅 <b>Дедлайн:</b> {task.due_date.strftime('%d.%m.%Y') if task.due_date else 'не указан'}\n\n"
         f"{task.description or 'Описание отсутствует'}"
     )
 
     keyboard = []
     if task.file_path:
         keyboard.append([InlineKeyboardButton(text="📎 Скачать файл", callback_data=f"seminar_task_download_{task.id}")])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к предмету", callback_data=f"seminar_subject_{task.id}")])
+    rep_row = await session.execute(
+        select(func.min(SeminarTask.id)).where(SeminarTask.subject == task.subject)
+    )
+    rep_id = rep_row.scalar_one_or_none()
+    if rep_id:
+        keyboard.append([InlineKeyboardButton(text="🔙 Назад к предмету", callback_data=f"seminar_subject_{rep_id}")])
     keyboard.append([InlineKeyboardButton(text="📚 Все предметы", callback_data="view_seminar_tasks")])
 
     await callback.message.edit_text(
