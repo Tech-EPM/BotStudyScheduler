@@ -28,14 +28,50 @@ async def teacher_send_task_start(message: types.Message, state: FSMContext, ses
 
     await state.set_state(TeacherTaskState.waiting_for_message)
     await message.answer(
-        "Отправьте задание одним сообщением.\n"
-        "Можно текст, фото или документ.\n"
-        "Для отмены напишите: отмена"
+        "📝 Введите сообщение для администратора.\n"
+        "Для отмены нажмите «❌ Отмена».",
+        reply_markup=Keyboards.get_teacher_task_cancel_keyboard(),
     )
 
 
 @router_teacher.message(
     StateFilter(TeacherTaskState.waiting_for_message),
+    F.text,
+)
+async def teacher_send_task_save_message(message: types.Message, state: FSMContext, session: AsyncSession):
+    if not await _is_teacher(session, message.from_user.id):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if text.lower() in {"отмена", "❌ отмена"}:
+        await state.clear()
+        await message.answer("❌ Отправка отменена.", reply_markup=Keyboards.get_teacher_menu())
+        return
+
+    if not text:
+        await message.answer("❌ Сообщение не может быть пустым.")
+        return
+
+    await state.update_data(task_text=text)
+    await state.set_state(TeacherTaskState.waiting_for_attachment)
+    await message.answer(
+        "📎 Добавьте файл или фото.\n"
+        "Если вложение не нужно, нажмите «⏭ Пропустить».",
+        reply_markup=Keyboards.get_teacher_task_attachment_keyboard(),
+    )
+
+
+@router_teacher.message(StateFilter(TeacherTaskState.waiting_for_message))
+async def teacher_send_task_invalid_first_step(message: types.Message):
+    await message.answer(
+        "❌ Сначала отправьте текстовое сообщение задания.",
+        reply_markup=Keyboards.get_teacher_task_cancel_keyboard(),
+    )
+
+
+@router_teacher.message(
+    StateFilter(TeacherTaskState.waiting_for_attachment),
     F.text | F.photo | F.document,
 )
 async def teacher_send_task_finish(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -43,9 +79,31 @@ async def teacher_send_task_finish(message: types.Message, state: FSMContext, se
         await state.clear()
         return
 
-    if (message.text or "").strip().lower() == "отмена":
+    text = (message.text or "").strip().lower()
+    if text in {"отмена", "❌ отмена"}:
         await state.clear()
         await message.answer("❌ Отправка отменена.", reply_markup=Keyboards.get_teacher_menu())
+        return
+
+    data = await state.get_data()
+    task_text = data.get("task_text", "").strip()
+    if not task_text:
+        await state.clear()
+        await message.answer("❌ Сессия отправки сброшена. Начните заново.", reply_markup=Keyboards.get_teacher_menu())
+        return
+
+    attachment = None
+    if message.photo:
+        attachment = "photo"
+    elif message.document:
+        attachment = "document"
+    elif text == "⏭ пропустить":
+        attachment = None
+    elif message.text:
+        await message.answer(
+            "❌ Пришлите файл/фото или нажмите «⏭ Пропустить».",
+            reply_markup=Keyboards.get_teacher_task_attachment_keyboard(),
+        )
         return
 
     sender = message.from_user
@@ -61,14 +119,12 @@ async def teacher_send_task_finish(message: types.Message, state: FSMContext, se
     delivered = 0
     for admin_id in Config.ADMIN_IDS:
         try:
-            if message.text:
-                await message.bot.send_message(
-                    admin_id,
-                    f"{header}\n\n📝 <b>Сообщение:</b>\n{message.text}",
-                    parse_mode="HTML",
-                )
-            else:
-                await message.bot.send_message(admin_id, header, parse_mode="HTML")
+            await message.bot.send_message(
+                admin_id,
+                f"{header}\n\n📝 <b>Сообщение:</b>\n{task_text}",
+                parse_mode="HTML",
+            )
+            if attachment:
                 await message.copy_to(admin_id)
             delivered += 1
         except Exception:

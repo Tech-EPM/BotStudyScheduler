@@ -36,7 +36,7 @@ class Keyboards:
             ],
             [
                 KeyboardButton(text="🎓 Файлы сессий"),
-                KeyboardButton(text="🏛 Деканат"),
+                KeyboardButton(text="❗️Информация"),
             ],
             [KeyboardButton(text="👩‍🏫 Админ-панель"), KeyboardButton(text="🆘 Помощь")],
         ]
@@ -54,7 +54,7 @@ class Keyboards:
                 KeyboardButton(text="🎓 Файлы сессий"),
                 KeyboardButton(text="✨ События"),
             ],
-            [KeyboardButton(text="🏛 Деканат")],
+            [KeyboardButton(text="❗️Информация")],
             [KeyboardButton(text="🆘 Помощь")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -69,6 +69,21 @@ class Keyboards:
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
+    @staticmethod
+    def get_teacher_task_attachment_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton(text="⏭ Пропустить")],
+            [KeyboardButton(text="❌ Отмена")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def get_teacher_task_cancel_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton(text="❌ Отмена")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
     # ==========================================
     # АДМИН-ПАНЕЛЬ (InlineKeyboard)
     # ==========================================
@@ -80,7 +95,7 @@ class Keyboards:
             [InlineKeyboardButton(text="📚 Редактировать учебные материалы", callback_data="admin_edit_common_files")],
             [InlineKeyboardButton(text="📝 Редактировать задания к семинарам", callback_data="admin_edit_seminar_tasks")],
             [InlineKeyboardButton(text="🎓 Редактировать материалы для сессии", callback_data="admin_edit_session_files")],
-            [InlineKeyboardButton(text="🏛 Редактировать деканат", callback_data="admin_edit_dean_office")],
+            [InlineKeyboardButton(text="❗️ Редактировать информацию", callback_data="admin_edit_dean_office")],
             [InlineKeyboardButton(text="👨‍🏫 Преподаватели", callback_data="admin_manage_teachers")],
             [InlineKeyboardButton(text="⏳ Редактировать напоминания", callback_data="admin_edit_reminders")],
             [InlineKeyboardButton(text="✨ Редактировать события", callback_data="admin_edit_events")],

@@ -45,15 +45,15 @@ async def _render_folders_text(session: AsyncSession):
     for folder in folders:
         keyboard.append([InlineKeyboardButton(text=f"📁 {folder.name}", callback_data=f"dean_folder_{folder.id}")])
 
-    text = "🏛 <b>Деканат</b>\n\nВыберите папку:"
+    text = "❗️ <b>Информация</b>\n\nВыберите папку:"
     if not folders:
-        text = "🏛 <b>Деканат</b>\n\nПока нет папок."
+        text = "❗️ <b>Информация</b>\n\nПока нет папок."
 
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
     return text, reply_markup
 
 
-@router_dean_office.message(F.text == "🏛 Деканат")
+@router_dean_office.message(F.text == "❗️Информация")
 async def open_dean_office(message: types.Message, session: AsyncSession):
     user = await _get_user(session, message.from_user.id)
     if not user:
@@ -72,7 +72,7 @@ async def open_dean_office_admin_editor(callback: types.CallbackQuery, session: 
         return
 
     await callback.message.edit_text(
-        "🏛 <b>Редактирование деканата</b>\n\nВыберите действие:",
+        "❗️ <b>Редактирование информации</b>\n\nВыберите действие:",
         reply_markup=Keyboards.get_admin_dean_office_keyboard(),
         parse_mode="HTML",
     )
@@ -566,7 +566,7 @@ async def dean_skip_entry_file(callback: types.CallbackQuery, state: FSMContext,
         await callback.message.edit_text("❌ Папка не найдена.")
     else:
         await callback.message.edit_text(
-            "✅ Заметка добавлена в деканат.",
+            "✅ Заметка добавлена в раздел «Информация».",
             reply_markup=Keyboards.get_admin_dean_office_keyboard(),
         )
     await callback.answer()
@@ -624,7 +624,7 @@ async def dean_add_entry_file_text(message: types.Message, state: FSMContext, se
         if not ok:
             await message.answer("❌ Папка не найдена.")
             return
-        await message.answer("✅ Заметка добавлена в деканат.", reply_markup=Keyboards.get_admin_dean_office_keyboard())
+        await message.answer("✅ Заметка добавлена в раздел «Информация».", reply_markup=Keyboards.get_admin_dean_office_keyboard())
         return
 
     await message.answer("Отправьте файл или нажмите «Пропустить».")

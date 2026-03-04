@@ -72,6 +72,7 @@ class TeacherAdminState(StatesGroup):
 
 class TeacherTaskState(StatesGroup):
     waiting_for_message = State()
+    waiting_for_attachment = State()
 
 
 class DeanOfficeState(StatesGroup):
