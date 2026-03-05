@@ -1,11 +1,14 @@
 import logging
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import select
+from aiogram import types
 from bot.db.models import Reminder, SeminarTask
 from bot.db.database import async_session_maker  # 👈 Используем ваш factory
+from bot.utils.file_storage import get_file_full_path
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +55,7 @@ class ReminderService:
         self.scheduler.add_job(
             self._send_reminder,
             trigger=DateTrigger(run_date=reminder.send_at),
-            args=[reminder.id, reminder.target_user_id, reminder.text],
+            args=[reminder.id],
             id=f"reminder_{reminder.id}",
             replace_existing=True,
             misfire_grace_time=60  # Допуск 60 секунд, если бот был перезагружен
@@ -60,19 +63,57 @@ class ReminderService:
         logger.debug(
             f"📅 Scheduled reminder {reminder.id} for {reminder.send_at}")
 
-    async def _send_reminder(self, reminder_id: str, user_id: int, text: str):
+    async def _send_reminder(self, reminder_id: str):
         """Функция отправки (вызывается планировщиком)"""
         try:
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    select(Reminder).where(Reminder.id == reminder_id, Reminder.status == 0)
+                )
+                reminder = result.scalar_one_or_none()
+
+            if not reminder:
+                logger.warning(f"⚠️ Reminder {reminder_id} not found or not active")
+                return
+
             await self.bot.send_message(
-                chat_id=user_id,
-                text=f"🔔 <b>Напоминание</b>:\n\n{text}",
+                chat_id=reminder.target_user_id,
+                text=f"🔔 <b>Напоминание</b>:\n\n{reminder.text}",
                 parse_mode="HTML"
             )
+
+            if reminder.file_path:
+                file_path = get_file_full_path(reminder.file_path)
+                if file_path.exists():
+                    await self._send_attachment(
+                        chat_id=reminder.target_user_id,
+                        file_path=file_path,
+                        file_type=reminder.file_type,
+                        file_name=reminder.file_name,
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ Reminder file missing on disk: {reminder.file_path} (id={reminder_id})"
+                    )
+
             await self._mark_as_sent(reminder_id)
-            logger.info(f"✅ Reminder {reminder_id} sent to {user_id}")
+            logger.info(f"✅ Reminder {reminder_id} sent to {reminder.target_user_id}")
         except Exception as e:
             logger.error(f"❌ Failed to send reminder {reminder_id}: {e}")
             # Можно добавить логику повторной отправки или уведомления админа
+
+    async def _send_attachment(
+        self,
+        chat_id: int,
+        file_path: Path,
+        file_type: str | None,
+        file_name: str | None,
+    ):
+        input_file = types.FSInputFile(str(file_path), filename=file_name or file_path.name)
+        if file_type == "photo":
+            await self.bot.send_photo(chat_id=chat_id, photo=input_file)
+            return
+        await self.bot.send_document(chat_id=chat_id, document=input_file)
 
     async def _mark_as_sent(self, reminder_id: str):
         """Помечает напоминание как отправленное в БД"""
@@ -86,7 +127,16 @@ class ReminderService:
                 await session.commit()
                 logger.debug(f"🗂️ Reminder {reminder_id} marked as sent")
 
-    async def create_reminder(self, target_user_id: int, text: str, send_at: datetime, created_by_id: int = None):
+    async def create_reminder(
+        self,
+        target_user_id: int,
+        text: str,
+        send_at: datetime,
+        created_by_id: int = None,
+        file_name: str | None = None,
+        file_path: str | None = None,
+        file_type: str | None = None,
+    ):
         """Создает напоминание в БД и планирует его"""
         send_at = send_at - timedelta(hours=3)
 
@@ -94,7 +144,10 @@ class ReminderService:
             target_user_id=target_user_id,
             text=text,
             send_at=send_at,
-            created_by=created_by_id
+            created_by=created_by_id,
+            file_name=file_name,
+            file_path=file_path,
+            file_type=file_type,
         )
 
         async with async_session_maker() as session:

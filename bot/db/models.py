@@ -179,6 +179,9 @@ class Reminder(Base):
     send_at = Column(DateTime, nullable=False, index=True)
     status = Column(Integer, default=0)  # 0=ожидает, 1=отправлено, 2=отменено
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # ✅ FK на users.id
+    file_name = Column(String(255), nullable=True)
+    file_path = Column(String(500), nullable=True)
+    file_type = Column(String(20), nullable=True)  # document/photo
     created_at = Column(DateTime, default=func.now())
 
     # ❌ УДАЛИЛ: creator relationship (вызывал ошибку)
@@ -253,3 +256,13 @@ def receive_before_delete_dean_entry_file(mapper, connection, target):
         delete_file(target.file_path)
     except Exception as e:
         print(f"Error deleting dean office file {target.file_path}: {e}")
+
+
+@event.listens_for(Reminder, "before_delete")
+def receive_before_delete_reminder_file(mapper, connection, target):
+    if not target.file_path:
+        return
+    try:
+        delete_file(target.file_path)
+    except Exception as e:
+        print(f"Error deleting reminder file {target.file_path}: {e}")

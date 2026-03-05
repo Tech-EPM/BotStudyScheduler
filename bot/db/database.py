@@ -54,6 +54,7 @@ async def init_db():
         await conn.run_sync(_ensure_schedule_week_id_column)
         await conn.run_sync(_ensure_seminar_due_date_column)
         await conn.run_sync(_ensure_dean_office_entry_extra_columns)
+        await conn.run_sync(_ensure_reminder_attachment_columns)
 
 
 def _ensure_schedule_week_type_column(sync_conn):
@@ -135,6 +136,25 @@ def _ensure_dean_office_entry_extra_columns(sync_conn):
     if "file_path" not in columns:
         sync_conn.execute(
             text("ALTER TABLE dean_office_entries ADD COLUMN file_path VARCHAR(500)")
+        )
+
+
+def _ensure_reminder_attachment_columns(sync_conn):
+    inspector = inspect(sync_conn)
+    if "reminders" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("reminders")}
+    if "file_name" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE reminders ADD COLUMN file_name VARCHAR(255)")
+        )
+    if "file_path" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE reminders ADD COLUMN file_path VARCHAR(500)")
+        )
+    if "file_type" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE reminders ADD COLUMN file_type VARCHAR(20)")
         )
 
 def get_session():

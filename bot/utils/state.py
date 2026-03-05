@@ -55,6 +55,7 @@ class ReminderState(StatesGroup):
     waiting_for_date = State()      
     waiting_for_time = State()
     waiting_for_text = State()
+    waiting_for_attachment = State()
 
 
 class SeminarTaskState(StatesGroup):

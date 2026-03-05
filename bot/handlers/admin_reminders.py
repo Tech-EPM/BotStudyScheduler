@@ -1,13 +1,14 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from bot.db.models import User, Dispatchers
 from bot.db.database import get_session
 from bot.utils.reminder_service import get_reminder_service, Reminder
 from bot.utils.state import ReminderState
+from bot.utils.keyboards import Keyboards
+from bot.utils.file_storage import allowed_file, save_file
 
 
 
@@ -223,19 +224,40 @@ async def process_time(message: types.Message, state: FSMContext):
 
 @router_reminder_admin.message(ReminderState.waiting_for_text)
 async def process_text(message: types.Message, state: FSMContext):
-    """Обработка текста и создание напоминания"""
+    """Обработка текста и переход к шагу вложения"""
     if not message.text or len(message.text.strip()) == 0:
         await message.answer("❌ Текст напоминания не может быть пустым.")
         return
 
-    data = await state.get_data()
-    target_id = data['target_user_id']
-    target_username = data.get('target_username')
-    send_datetime = data['send_time']
     text = message.text.strip()
+    await state.update_data(reminder_text=text)
+    await state.set_state(ReminderState.waiting_for_attachment)
+    await message.answer(
+        "📎 Пришлите файл или фото для напоминания.\n"
+        "Если вложение не нужно, нажмите «⏭ Пропустить».",
+        reply_markup=Keyboards.get_reminder_attachment_keyboard(),
+    )
+
+
+async def _create_reminder_from_state(
+    message: types.Message,
+    state: FSMContext,
+    file_name: str | None = None,
+    file_path: str | None = None,
+    file_type: str | None = None,
+):
+    data = await state.get_data()
+    target_id = data["target_user_id"]
+    target_username = data.get("target_username")
+    send_datetime = data["send_time"]
+    text = (data.get("reminder_text") or "").strip()
+
+    if not text:
+        await state.clear()
+        await message.answer("❌ Текст напоминания потерян. Начните создание заново.")
+        return
 
     try:
-        # Получаем ID создателя из БД
         creator_db_id = None
         async with get_session() as session:
             result = await session.execute(
@@ -245,37 +267,99 @@ async def process_text(message: types.Message, state: FSMContext):
             if user:
                 creator_db_id = user.id
 
-        # Создаем напоминание через сервис
-
-        service = get_reminder_service() 
-
+        service = get_reminder_service()
         reminder = await service.create_reminder(
             target_user_id=target_id,
             text=text,
             send_at=send_datetime,
-            created_by_id=creator_db_id
+            created_by_id=creator_db_id,
+            file_name=file_name,
+            file_path=file_path,
+            file_type=file_type,
         )
 
         await state.clear()
-        
+        attach_line = "📎 Вложение: есть\n" if file_path else "📎 Вложение: нет\n"
         await message.answer(
             "✅ **Напоминание успешно создано!**\n\n"
             f"👤 Получатель: `@{target_username}`\n"
             f"🆔 Telegram ID: `{target_id}`\n"
             f"⏰ Дата и время: `{send_datetime.strftime('%d.%m.%Y %H:%M')}`\n"
-            f"📄 Текст: {text[:100]}{'...' if len(text) > 100 else ''}\n\n"
-            f"🆔 ID напоминания: `{reminder.id}`"
+            f"📄 Текст: {text[:100]}{'...' if len(text) > 100 else ''}\n"
+            f"{attach_line}\n"
+            f"🆔 ID напоминания: `{reminder.id}`",
+            reply_markup=Keyboards.get_admin_menu(),
         )
-        
         logger.info(f"Reminder created: {reminder.id} for user {target_id} at {send_datetime}")
-        
     except Exception as e:
         logger.error(f"Failed to create reminder: {e}")
         await message.answer(
             "❌ **Произошла ошибка при создании напоминания.**\n\n"
-            "Попробуйте позже или обратитесь к разработчику."
+            "Попробуйте позже или обратитесь к разработчику.",
+            reply_markup=Keyboards.get_admin_menu(),
         )
         await state.clear()
+
+
+@router_reminder_admin.message(
+    ReminderState.waiting_for_attachment,
+    F.text,
+)
+async def process_reminder_attachment_text(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip().lower()
+    if text in {"❌ отмена", "отмена"}:
+        await state.clear()
+        await message.answer("❌ Создание напоминания отменено.", reply_markup=Keyboards.get_admin_menu())
+        return
+    if text in {"⏭ пропустить", "пропустить", "skip"}:
+        await _create_reminder_from_state(message, state)
+        return
+    await message.answer(
+        "❌ Отправьте фото/документ или нажмите «⏭ Пропустить».",
+        reply_markup=Keyboards.get_reminder_attachment_keyboard(),
+    )
+
+
+@router_reminder_admin.message(
+    ReminderState.waiting_for_attachment,
+    F.photo | F.document,
+)
+async def process_reminder_attachment_file(message: types.Message, state: FSMContext):
+    if message.photo:
+        photo = message.photo[-1]
+        file_info = await message.bot.get_file(photo.file_id)
+        file_io = await message.bot.download_file(file_info.file_path)
+        file_bytes = file_io.read()
+        original_name = f"photo_{photo.file_id[:8]}.jpg"
+        file_type = "photo"
+    else:
+        doc = message.document
+        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+            await message.answer(
+                "❌ Файл слишком большой (макс. 20 МБ).",
+                reply_markup=Keyboards.get_reminder_attachment_keyboard(),
+            )
+            return
+        if not allowed_file(doc.file_name):
+            await message.answer(
+                "❌ Тип файла не поддерживается.",
+                reply_markup=Keyboards.get_reminder_attachment_keyboard(),
+            )
+            return
+        file_info = await message.bot.get_file(doc.file_id)
+        file_io = await message.bot.download_file(file_info.file_path)
+        file_bytes = file_io.read()
+        original_name = doc.file_name
+        file_type = "document"
+
+    relative_path = await save_file(file_bytes, original_name, "reminders")
+    await _create_reminder_from_state(
+        message,
+        state,
+        file_name=original_name,
+        file_path=relative_path,
+        file_type=file_type,
+    )
 
 
 @router_reminder_admin.callback_query(F.data == "admin_reminders_list")
@@ -328,12 +412,14 @@ async def show_reminders_list(callback: types.CallbackQuery, page: int = 1):
     keyboard = []  
     for i, reminder in enumerate(reminders, start=(page - 1) * PER_PAGE + 1):
         creator_name = creators_map.get(reminder.created_by) or "—"
+        attachment_flag = "да" if reminder.file_path else "нет"
         
         text += (
             f"{i}. 🆔 `{reminder.id}`\n"
             f"   👤 Получатель: `{reminder.target_user_id}`\n"
             f"   ⏰ {reminder.send_at.strftime('%d.%m.%Y %H:%M')}\n"
             f"   📝 {reminder.text[:50]}{'...' if len(reminder.text) > 50 else ''}\n"
+            f"   📎 Вложение: {attachment_flag}\n"
             f"   👨‍💻 Создал: {creator_name}\n\n"
         )
         

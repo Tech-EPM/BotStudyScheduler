@@ -162,6 +162,14 @@ class Keyboards:
             [InlineKeyboardButton(text="🔙 Назад", callback_data="goto_back")],
         ]
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    @staticmethod
+    def get_reminder_attachment_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton(text="⏭ Пропустить")],
+            [KeyboardButton(text="❌ Отмена")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
     
 
     @staticmethod

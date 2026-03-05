@@ -5,3 +5,11 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    restart: unless-stopped
+    volumes:
+      - studybot_db:/app/bot/db
+      - studybot_storage:/app/storage
+
+volumes:
+  studybot_db:
+  studybot_storage:
